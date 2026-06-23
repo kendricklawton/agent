@@ -1,0 +1,81 @@
+# .rules — `agent` (OSS)
+
+> Single source of truth for this repo. AI assistants (Claude, Gemini, Codex/others) and humans
+> must read and follow this file. `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` all point here.
+
+## What this repo is
+The **open-source** eBPF node agent that observes and secures Kubernetes workloads, purpose-built
+to understand **GPU/AI inference** workloads. **Apache-2.0, public.** Open-core pair with the
+private `agent-cloud` control plane.
+
+## Stack & tooling
+- Language: **Rust**.
+- eBPF framework: **`aya`** (pure Rust). **NOT Wasmtime** — that was a different, abandoned idea.
+- Layout: **Cargo workspace** (`Cargo.toml` with `members = ["crates/*"]`).
+- k8s client: `kube-rs`. Scaffold from `aya-template`.
+- Model structure after: `bpfman/bpfman` (Rust+Aya+k8s — closest match), `cilium/tetragon`,
+  `falcosecurity/falco`.
+
+## Target crate layout
+```
+crates/common    shared #[repr(C)] event types — the contract (kernel ⇄ userspace ⇄ cloud). The spine.
+crates/ebpf      eBPF programs (no_std, compiled to BPF): kprobes/tracepoints/LSM
+crates/agent     userspace binary: loads eBPF, reads ring buffer, enriches, alerts
+crates/enrich    k8s metadata enrichment via kube-rs (cgroup → container → pod/namespace)
+crates/rules     detection engine
+crates/exporter  ship events to the control plane (gRPC/proto)
+xtask            build orchestration (compile eBPF + run)
+```
+
+## The open-core contract (critical)
+- This OSS repo **NEVER** imports `agent-cloud`. Dependencies point one way: **cloud → OSS**.
+- The contract = the `common` crate's `#[repr(C)]` event types + the gRPC/proto schema. It lives
+  **here**. Keep it stable, `no_std`-compatible, dependency-light.
+- The agent must be **fully usable self-hosted with zero cloud**.
+
+## Conventions
+- `cargo fmt` + `cargo clippy` clean. eBPF crate is `no_std`; userspace is normal.
+- eBPF programs must pass the verifier; get correctness before performance.
+  - **Build events in place in the reserved ring-buffer slot and zero the whole slot first**
+    (`write_bytes(.., 0, ..)`); never build on the stack and copy. The verifier tracks provenance
+    per byte and rejects an uninitialized (incl. padding) byte reaching `bpf_ringbuf_submit` as
+    *invalid indirect read from stack*. Keep `#[repr(C)]` event types **padding-free** (order
+    `u64`s first) and guard the layout with `const _: () = assert!(size_of::<T>() == …)`.
+  - **Capture stable identity in-kernel, at event time** — `cgroup_id`, `mnt_ns_inum`, and the
+    `bpf_ktime_get_ns()` timestamp are read while we hold the `task_struct` (the only moment they're
+    guaranteed to exist). Userspace post-resolution is inherently racy.
+  - **Ring-buffer size must be a power of two and a page multiple**, validated in the loader before
+    `bpf_map_create` (else `-EINVAL` with no diagnostic).
+- Userspace must never block the ring-buffer drain on enrichment — see **Cold-start & re-sync**.
+- **Boot preflight:** verify BTF present, cgroup v2, kernel ≥ 5.8, and read
+  `/sys/kernel/security/lsm` — if `bpf` is absent, LSM enforcement (M6) can't attach, so log a
+  glaring `WARN` and degrade to `bpf_send_signal` + `cgroup/connect` enforcement.
+- The cgroup tree-crawler (M2) runs on a **low-priority background task**, scans only
+  `kubepods.slice`, and `statx`es **directories only** (the `cgroup_id` is the dir inode) — never
+  leaf files like `cpu.pressure`/`memory.stat`, or a dense node spikes the agent's own CPU.
+- Shipped as a Kubernetes **DaemonSet**.
+
+## Cold-start & re-sync (architectural invariant)
+When the DaemonSet lands on a node with workloads already running, kernel events arrive in the ring
+buffer before the pod cache exists. **Capture and enrichment are two clocks; capture is never gated
+on enrichment.**
+- **Attach probes first** — accept an initial burst of unenriched events rather than a blind window.
+  Missing a boot-time `exec` is a security failure; labeling it late is not.
+- **Seed the baseline from `/proc`** (per PID: `cgroup`, `ns/mnt`, starttime, `comm`) — already-
+  running pods never fire `exec`; snapshot the running world, then maintain it from exec/exit deltas.
+- **Node-scope the kube List** (`fieldSelector=spec.nodeName=$NODE_NAME`) so the initial sync is
+  sub-second, not cluster-wide.
+- **Cache-miss events park in a bounded, short-deadline resync queue** keyed on
+  `(cgroup_id, mnt_ns_inum)` and re-resolve on cache updates; on deadline they emit as explicit
+  `Unknown` — never dropped, never silently mislabeled. Queue-full → emit-unenriched + a metric.
+- **Make the boundary auditable** — every event carries a `synced` bit (`cold_start` vs `steady`),
+  and the readiness probe stays `NotReady` until the `/proc` backfill and initial List complete.
+- `synced` and `PodMeta` are **userspace enrichment annotations**, not part of the kernel
+  `#[repr(C)]` event ABI.
+
+## License
+Apache-2.0.
+
+## Cross-refs
+- Product & cloud strategy: ../project/PROJECTS.md
+- Build plan for this repo: ./ROADMAP.md

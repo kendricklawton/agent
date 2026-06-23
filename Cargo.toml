@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+# Crates to add (see ROADMAP / .rules):
+#   crates/common   – shared #[repr(C)] event types (the contract; no_std)
+#   crates/ebpf     – eBPF programs (no_std, BPF target)
+#   crates/agent    – userspace binary
+#   crates/enrich   – k8s enrichment (kube-rs)
+#   crates/rules    – detection engine
+#   crates/exporter – gRPC export to agent-cloud
