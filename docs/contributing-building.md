@@ -44,7 +44,9 @@ and run (tier 3+ testing), the kernel must have:
   [ADR-0002](./adr/0002-co-re-btf-over-compile-per-kernel.md)),
 - **cgroup v2** (`/sys/fs/cgroup/cgroup.controllers` present).
 
-You can build (and run the host-only tests) on macOS, but loading eBPF requires a Linux box.
+You can build (and run the host-only tests) on macOS, but loading eBPF requires a Linux box. The full
+per-feature matrix (including M6's BPF-LSM needs) lives in [support-matrix.md](./support-matrix.md);
+the agent's [boot preflight](../crates/agent/src/preflight.rs) checks these at startup.
 
 ### Distro packages
 

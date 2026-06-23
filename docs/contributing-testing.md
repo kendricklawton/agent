@@ -13,7 +13,7 @@ GPU.
 |------|----------------|-------|---------|
 | **1 · Unit** | parsers, rule engine, decoders, the `#[repr(C)]` ABI `const`-asserts | nothing — pure host (even macOS) | `cargo test` |
 | **2 · Build / lint gate** | eBPF cross-compiles + embeds; style; supply chain | Linux + nightly + `bpf-linker` | `cargo xtask build` + the lint commands below |
-| **3 · eBPF load / verifier** | the program **loads and passes the verifier** on a real kernel | root + kernel ≥ 5.8 + BTF | `cargo xtask run -- --once` (CI: `lvh`/qemu microVM) |
+| **3 · eBPF load / verifier** | the program **loads and passes the verifier** on a real kernel | root + kernel ≥ 5.8 + BTF | `cargo xtask run -- --once` (CI: on-runner smoke + pinned-kernel microVM) |
 | **4 · Integration (k8s)** | enrichment correctness, RBAC, event → alert end-to-end | `kind` + `docker` + a real kernel | `kind create cluster` + the integration tests |
 | **5 · e2e GPU** | real GPU numbers + the signature demo | an NVIDIA GPU on Linux (or a spot node) | manual, per the M4 runbook |
 
@@ -60,9 +60,10 @@ cargo xtask run -- --once     # uses sudo; loads, attaches, detaches cleanly on 
 ```
 
 Success = no verifier rejection, the program attaches, and it tears down on `Drop`. A verifier
-rejection is a **test failure**, not a warning. In CI this runs inside a `lvh`/qemu **microVM** with a
-pinned kernel, because the bare GitHub runner has neither the privileges nor `/sys/kernel/btf` — see
-[CI](./contributing-ci.md).
+rejection is a **test failure**, not a warning. In CI this runs two ways: an **on-runner smoke**
+(`sudo agent --once` in `ci.yml`) on the runner's own kernel — cheap and always-on — plus a
+**pinned-kernel `lvh`/qemu microVM** (`ebpf-smoke.yml`) that adds the reproducible, known-kernel
+coverage the *uncontrolled* runner kernel can't give. See [CI](./contributing-ci.md).
 
 > Common eBPF test failures and their cause live next to the code discipline that prevents them:
 > zero the reserved ring-buffer slot before writing, keep `#[repr(C)]` types padding-free, and bound
@@ -117,7 +118,8 @@ path / event shape.
 
 Add a deterministic check that the program loads and behaves: spawn a known trigger (e.g. exec a known
 binary), then assert exactly the expected event arrives over the ring buffer with the right fields,
-and assert **zero loss** under a tight trigger loop. These run in the microVM in CI.
+and assert **zero loss** under a tight trigger loop. These belong in the pinned-kernel microVM
+(`ebpf-smoke.yml`) in CI.
 
 ### Integration tests (tier 4)
 

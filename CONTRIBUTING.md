@@ -48,7 +48,7 @@ with an ADR and ends with a git tag, a working demo, and green CI. Good entry po
 
 - **Userspace, no kernel needed:** enrichment parsers, the rule engine, decoders, test fixtures.
 - **eBPF:** a new probe or field capture (needs a Linux kernel + root to verify — tier 3).
-- **Docs:** the support matrix, the architecture/CI guides below as they fill in.
+- **Docs:** the [support matrix](./docs/support-matrix.md), the architecture/CI guides below as they fill in.
 
 If you're unsure whether a change fits the current milestone, open an issue first — the
 [discipline test](./ROADMAP.md) is *"does this deepen kernel-level signal or k8s/GPU enrichment

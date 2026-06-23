@@ -83,4 +83,5 @@ The *rule* is here; the *why* is in the linked ADR.
 ## Cross-refs
 - The plan & milestones: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.
 - Decision records: [`docs/adr/`](./docs/adr/) · Contributor setup & test tiers: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- Kernel/platform requirements: [`docs/support-matrix.md`](./docs/support-matrix.md) (enforced by the boot preflight)
 - Product & cloud strategy: `../project/PROJECTS.md` · License: **Apache-2.0**

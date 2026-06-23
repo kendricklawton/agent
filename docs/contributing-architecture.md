@@ -21,7 +21,7 @@
 |-------|------|
 | `crates/common` | `#[repr(C)]` event types — the kernel ⇄ userspace ⇄ cloud contract (`no_std`). The spine. |
 | `crates/ebpf` | eBPF programs (`no_std`, BPF target): tracepoints / kprobes / LSM |
-| `crates/agent` | userspace binary: load eBPF, drain the ring buffer, enrich, alert, export |
+| `crates/agent` | userspace binary: boot preflight, load eBPF, drain the ring buffer, enrich, alert, export |
 | `crates/enrich` | k8s enrichment via `kube-rs` (cgroup → container → pod) — *M2, not yet* |
 | `crates/rules` | detection engine — *M5, not yet* |
 | `crates/exporter` | gRPC/proto export to `agent-cloud` — *M7, not yet* |

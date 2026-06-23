@@ -93,15 +93,16 @@ by CI. No probes yet — just the skeleton everything hangs on.
   with `task_struct`; M1 is the first consumer. → [ADR-0002](docs/adr/0002-co-re-btf-over-compile-per-kernel.md)
 - [x] **Decision: ring buffer over perf buffer** (`BPF_MAP_TYPE_RINGBUF` — MPSC, lossless, clean
   reserve/commit). Sets the **min-kernel-5.8** floor. → [ADR-0001](docs/adr/0001-ring-buffer-over-perf-buffer.md)
-- [ ] **Boot preflight** (shipped now, relied on everywhere after): probe BTF present, cgroup v2,
+- [x] **Boot preflight** (shipped now, relied on everywhere after): probe BTF present, cgroup v2,
   kernel ≥ 5.8, and read `/sys/kernel/security/lsm`; if `bpf` is absent, `WARN` that LSM enforcement
-  (M6) can't attach and will degrade.
-- [ ] CI: `cargo build` (default-members) + the eBPF object build, `cargo clippy -- -D warnings`,
-  `cargo fmt --check`, `cargo deny check`.
-- [ ] CI: **eBPF load/verifier smoke-test in a microVM** (`lvh`/qemu, known kernel) — catches
-  verifier/load regressions the bare GitHub runner can't.
+  (M6) can't attach and will degrade. → `crates/agent/src/preflight.rs`
+- [x] CI: `cargo build` (default-members) + the eBPF object build, `cargo clippy -- -D warnings`,
+  `cargo fmt --check`, `cargo deny check`. → `.github/workflows/ci.yml` (plus an on-runner load smoke-test).
+- [~] CI: **eBPF load/verifier smoke-test in a microVM** (`lvh`/qemu, known kernel) — catches
+  verifier/load regressions the bare GitHub runner can't. → `.github/workflows/ebpf-smoke.yml`
+  (scaffolded over pinned kernels; needs CI iteration to go green).
 - [x] ADR template + [`docs/adr/`](docs/adr/) log; foundational decisions recorded as ADR-0001…0008.
-- [ ] Seed the **kernel/platform support matrix** doc.
+- [x] Seed the **kernel/platform support matrix** doc. → [`docs/support-matrix.md`](docs/support-matrix.md)
 - [ ] Tag `v0.0.0` (loads + attaches a trivial no-op program, detaches cleanly on `Drop`).
 
 ## M1 — First probe: process execution ⭐
@@ -282,7 +283,8 @@ events stream over mTLS; killing the endpoint doesn't disrupt local operation.
 
 ## Cross-cutting standards (apply to every milestone)
 
-**Kernel & platform support matrix** — maintain in `docs/`, test against:
+**Kernel & platform support matrix** — maintained in [`docs/support-matrix.md`](docs/support-matrix.md)
+(enforced at startup by the boot preflight), test against:
 - Min kernel **5.8** (ring buffer); BPF-LSM (M6) needs **5.7+** with `CONFIG_BPF_LSM` and `bpf` in the
   active LSM list (`lsm=...,bpf`) — preflighted via `/sys/kernel/security/lsm`. Requires CO-RE/BTF
   (`CONFIG_DEBUG_INFO_BTF`) and **cgroup v2**.

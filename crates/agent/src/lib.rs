@@ -6,6 +6,8 @@
 use anyhow::Context as _;
 use aya::{Ebpf, programs::TracePoint};
 
+pub mod preflight;
+
 /// The eBPF object, compiled to the BPF target by `build.rs` and embedded at build time.
 static EBPF_OBJECT: &[u8] = aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/agent-ebpf"));
 
@@ -47,6 +49,7 @@ pub fn load() -> anyhow::Result<Ebpf> {
 
 /// Run the agent: load, attach, and wait for shutdown (unless `cfg.once`).
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
+    preflight::check().context("boot preflight")?;
     let _ebpf = load()?;
     tracing::info!("eBPF program attached to sched/sched_process_exec (M0 no-op); agent ready");
 

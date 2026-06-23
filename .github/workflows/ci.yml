@@ -1,0 +1,68 @@
+# CI — build, lint, test, supply-chain, and an on-runner eBPF load smoke-test.
+#
+# The eBPF crate cross-compiles under a directory-scoped *nightly* toolchain (needs `rust-src` +
+# `bpf-linker`); the rest of the workspace is *stable*. We never `cargo build --workspace` — the
+# canonical entrypoint `cargo xtask build` drives `crates/agent/build.rs`, which cross-compiles the
+# eBPF object and embeds it. See ADR-0003 and .rules.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build · lint · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchains
+        run: |
+          # The pinned stable (rust-toolchain.toml) auto-installs on first cargo use.
+          rustup show
+          # The eBPF crate's dir-scoped nightly needs rust-src for `-Z build-std=core`.
+          rustup toolchain install nightly --profile minimal --component rust-src
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --locked
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (default-members; eBPF crate excluded by design)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build (userspace + embedded eBPF object)
+        run: cargo xtask build
+
+      - name: Test
+        run: cargo test
+
+      # Tier A: load the program on the runner's own (recent, BTF-enabled) kernel as root.
+      # Proves it loads, the verifier accepts it, it attaches, and exits 0. The runner kernel is
+      # uncontrolled — the pinned-kernel matrix in ebpf-smoke.yml is what makes this reproducible.
+      - name: eBPF load smoke-test
+        run: sudo ./target/debug/agent --once
+
+  deny:
+    name: supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

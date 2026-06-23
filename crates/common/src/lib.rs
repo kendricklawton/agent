@@ -15,7 +15,7 @@
 //! - **Enrichment is userspace-only.** `PodMeta` and the `synced` flag are annotations layered onto
 //!   the exported event by the agent; they are **not** part of this kernel ABI.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 use core::mem::size_of;
 
@@ -29,13 +29,43 @@ pub enum EventKind {
     GpuStat = 4,
 }
 
+/// A `kind` discriminant read off the wire that doesn't match any known [`EventKind`]. Carries the
+/// offending value so callers can count/log it rather than guess.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UnknownEventKind(pub u32);
+
+impl EventKind {
+    /// The on-wire `u32` for this kind. Use this (not a cast) when writing [`EventHeader::kind`] in
+    /// the kernel, so the wire encoding stays the single source of truth.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+impl TryFrom<u32> for EventKind {
+    type Error = UnknownEventKind;
+
+    /// Safely decode a wire `kind` into an [`EventKind`]. Never transmute a kernel-provided `u32`
+    /// into the enum — an out-of-range value would be undefined behavior; this returns an error.
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Exec),
+            2 => Ok(Self::Connect),
+            3 => Ok(Self::FileOpen),
+            4 => Ok(Self::GpuStat),
+            other => Err(UnknownEventKind(other)),
+        }
+    }
+}
+
 /// Fixed header prefixing every event so userspace can demux by `kind` off a single ring buffer.
 ///
 /// Layout is padding-free: `ktime_ns` (the in-kernel `bpf_ktime_get_ns()` stamp, so late
 /// enrichment never distorts event time) leads, then the 32-bit fields, then the 16-bit fields and
 /// explicit reserved bytes. `_pad`/`_reserved` exist so every byte is a real, zeroable field.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct EventHeader {
     /// `bpf_ktime_get_ns()`, stamped in-kernel at event creation (monotonic).
     pub ktime_ns: u64,
@@ -55,7 +85,7 @@ pub struct EventHeader {
 /// identity key userspace joins to a pod — `mnt_ns_inum` recycles slower than the cgroup inode, so
 /// it reconciles short-lived pods whose cgroup directory is unlinked before enrichment runs.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct ExecEvent {
     pub hdr: EventHeader,
     pub pid: u32,
@@ -75,3 +105,30 @@ const _: () = assert!(size_of::<EventHeader>() == 24);
 const _: () = assert!(
     size_of::<ExecEvent>() == size_of::<EventHeader>() + (4 + 4 + 4 + 4) + (8 + 8) + 16 + 256
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_kind_roundtrips_through_u32() {
+        for kind in [
+            EventKind::Exec,
+            EventKind::Connect,
+            EventKind::FileOpen,
+            EventKind::GpuStat,
+        ] {
+            assert_eq!(EventKind::try_from(kind.as_u32()), Ok(kind));
+        }
+    }
+
+    #[test]
+    fn unknown_event_kind_is_an_error_not_ub() {
+        assert_eq!(EventKind::try_from(0), Err(UnknownEventKind(0)));
+        assert_eq!(EventKind::try_from(5), Err(UnknownEventKind(5)));
+        assert_eq!(
+            EventKind::try_from(u32::MAX),
+            Err(UnknownEventKind(u32::MAX))
+        );
+    }
+}
