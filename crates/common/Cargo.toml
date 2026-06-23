@@ -7,3 +7,6 @@ license.workspace = true
 # The contract crate: shared event types between the eBPF (kernel) side, the userspace
 # agent, and (via gRPC/proto) agent-cloud. Keep it no_std and dependency-light.
 [dependencies]
+
+[lints]
+workspace = true

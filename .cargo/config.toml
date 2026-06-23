@@ -1,0 +1,4 @@
+# `cargo xtask <cmd>` is the canonical build/run entrypoint (build orchestration, eBPF
+# object compilation under nightly, running the agent with the needed capabilities).
+[alias]
+xtask = "run --package xtask --"

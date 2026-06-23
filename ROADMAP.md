@@ -79,12 +79,13 @@ A reproducible build of both a BPF object and the userspace binary, loadable on 
 by CI. No probes yet — just the skeleton everything hangs on.
 
 - [x] Cargo workspace + the `common` crate (the ABI spine; `Cargo.toml` with `members = ["crates/*"]`).
-- [ ] Scaffold the remaining crates from `aya-template`: `ebpf` (`no_std`, BPF target), `agent`
-  (userspace, tokio), `xtask` (build orchestration). `enrich`/`rules`/`exporter` stub in at their milestone.
-- [ ] `rust-toolchain.toml` pinning: stable for userspace; **nightly** for the `ebpf` crate
-  (`bpfel-unknown-none`, `-Z build-std=core`, `bpf-linker`).
-- [ ] **`xtask`**: build the eBPF crate → embed the object via `aya-build`/`include_bytes_aligned!`
-  → build/run the agent. `cargo xtask build` / `cargo xtask run` are the canonical entrypoints.
+- [x] Scaffold the remaining crates: `ebpf` (`no_std`, BPF target), `agent` (userspace, tokio),
+  `xtask` (build orchestration). `enrich`/`rules`/`exporter` deferred to their milestone.
+- [x] `rust-toolchain.toml` split: root pins **stable**; `crates/ebpf/rust-toolchain.toml` pins
+  **nightly** (dir-scoped) for the BPF target (`bpfel-unknown-none`, `-Z build-std=core`, `bpf-linker`).
+- [x] **`xtask` + build wiring**: `crates/agent/build.rs` cross-compiles the eBPF crate under nightly
+  (clearing the inherited `RUSTUP_TOOLCHAIN` so the dir-scoped pin wins) and embeds it via
+  `include_bytes_aligned!`. `cargo xtask build` / `cargo xtask run` are the canonical entrypoints.
 - [ ] **CO-RE/BTF:** generate `vmlinux.rs` (`aya-tool`) and rely on `/sys/kernel/btf/vmlinux`; never
   hand-roll kernel structs. (Decision: one portable object over compile-per-kernel.)
 - [ ] **Decision: ring buffer over perf buffer** (`BPF_MAP_TYPE_RINGBUF` — MPSC, lossless, clean
@@ -92,9 +93,8 @@ by CI. No probes yet — just the skeleton everything hangs on.
 - [ ] **Boot preflight** (shipped now, relied on everywhere after): probe BTF present, cgroup v2,
   kernel ≥ 5.8, and read `/sys/kernel/security/lsm`; if `bpf` is absent, `WARN` that LSM enforcement
   (M6) can't attach and will degrade.
-- [ ] **Loader guard:** validate any ring-buffer size is a **power of two and a page multiple**
-  before `bpf_map_create` (else `-EINVAL` with no diagnostic).
-- [ ] CI: `cargo build` (both targets), `cargo clippy -- -D warnings`, `cargo fmt --check`.
+- [ ] CI: `cargo build` (default-members) + the eBPF object build, `cargo clippy -- -D warnings`,
+  `cargo fmt --check`, `cargo deny check`.
 - [ ] CI: **eBPF load/verifier smoke-test in a microVM** (`lvh`/qemu, known kernel) — catches
   verifier/load regressions the bare GitHub runner can't.
 - [ ] ADR template + `docs/adr/` log; seed the **kernel/platform support matrix** doc.
@@ -117,6 +117,9 @@ The end-to-end pipeline for one event type — kernel hook → ring buffer → t
   incl. padding, byte reaching `bpf_ringbuf_submit` as *invalid indirect read from stack*.)
 - [ ] **Userspace:** consume `aya::maps::RingBuf` async (tokio `AsyncFd`); cast bytes → struct
   (`bytemuck`/`aya::Pod`); dispatch on `hdr.kind`; handle partial reads + shutdown (detach on `Drop`).
+- [ ] **Loader guard:** validate the ring-buffer size is a **power of two and a page multiple**
+  before `bpf_map_create` (else `-EINVAL` with no diagnostic). *(Moved from M0 — the ring buffer
+  first exists here.)*
 - [ ] Bounded `argv` capture (a few args, truncated) via `bpf_probe_read_user` under `#[unroll]` —
   every read guarded for the verifier.
 - [ ] **Tests:** deterministic VM integration test (spawn a known binary → assert one `ExecEvent`);

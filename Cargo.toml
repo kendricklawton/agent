@@ -1,15 +1,57 @@
 [workspace]
-resolver = "2"
-members = ["crates/*"]
+resolver = "3"
+members  = ["crates/*"]
+# The eBPF crate compiles to the `bpfel-unknown-none` target under a *nightly* toolchain
+# (see crates/ebpf/rust-toolchain.toml). Excluding it from default-members means a bare
+# `cargo build` / `clippy` operates only on the stable host crates; the BPF object is built
+# explicitly by `crates/agent/build.rs` (driven by `cargo xtask`).
+default-members = ["crates/common", "crates/agent", "crates/xtask"]
 
 [workspace.package]
-edition = "2021"
-license = "Apache-2.0"
+edition      = "2024"
+license      = "Apache-2.0"
+rust-version = "1.94"
 
-# Crates to add (see ROADMAP / .rules):
-#   crates/common   – shared #[repr(C)] event types (the contract; no_std)
-#   crates/ebpf     – eBPF programs (no_std, BPF target)
-#   crates/agent    – userspace binary
-#   crates/enrich   – k8s enrichment (kube-rs)
-#   crates/rules    – detection engine
-#   crates/exporter – gRPC export to agent-cloud
+# Single source of version truth. Every crate references these via `dep.workspace = true`.
+[workspace.dependencies]
+# --- the contract crate (shared, no_std) ---
+agent-common = { path = "crates/common" }
+
+# --- aya: userspace loader + eBPF + logging (pinned crates.io releases) ---
+aya          = { version = "0.13.1", default-features = false }
+aya-log      = { version = "0.2.1", default-features = false }
+aya-ebpf     = { version = "0.1.1", default-features = false }
+aya-log-ebpf = { version = "0.1.0", default-features = false }
+
+# --- userspace runtime / CLI / errors / logging ---
+tokio              = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "signal"] }
+anyhow             = { version = "1", default-features = false, features = ["std"] }
+thiserror          = { version = "2", default-features = false }
+clap               = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
+tracing            = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "json", "ansi"] }
+tracing-log        = { version = "0.2", default-features = false }
+libc               = { version = "0.2", default-features = false }
+
+# House-style lints (mirrors ../project-cloud). Each crate opts in with `[lints] workspace = true`.
+# The no-panic discipline: `unwrap`/`expect`/`panic!` are denied in non-test code; `clippy.toml`
+# re-allows them in tests, and fail-fast startup sites carry a targeted `#[allow(.., reason = …)]`.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic       = "deny"
+
+# Userspace release build: small, fast, debuggable-enough. panic stays "unwind" so a panicking
+# tokio task is isolated instead of aborting the whole agent.
+[profile.release]
+lto           = "thin"
+codegen-units = 1
+
+# The eBPF object MUST keep BTF (debug info) for CO-RE and must never be stripped; a single
+# codegen unit keeps the verifier-visible program intact. Built only via the BPF target.
+[profile.release.package.agent-ebpf]
+debug         = 2
+codegen-units = 1
