@@ -8,6 +8,10 @@
 
 use aya_ebpf::{macros::tracepoint, programs::TracePointContext};
 
+// Generated CO-RE bindings to kernel structs (regenerate with `cargo xtask codegen`).
+// Unused until M1 reads `task_struct` fields (ppid, mnt-ns inode) via CO-RE.
+mod vmlinux;
+
 /// No-op program. Userspace attaches it to `sched/sched_process_exec`; returning 0 = "continue".
 #[tracepoint]
 pub fn noop(_ctx: TracePointContext) -> u32 {

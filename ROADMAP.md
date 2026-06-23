@@ -83,13 +83,16 @@ by CI. No probes yet — just the skeleton everything hangs on.
   `xtask` (build orchestration). `enrich`/`rules`/`exporter` deferred to their milestone.
 - [x] `rust-toolchain.toml` split: root pins **stable**; `crates/ebpf/rust-toolchain.toml` pins
   **nightly** (dir-scoped) for the BPF target (`bpfel-unknown-none`, `-Z build-std=core`, `bpf-linker`).
+  → [ADR-0003](docs/adr/0003-stable-root-nightly-ebpf-toolchain-split.md)
 - [x] **`xtask` + build wiring**: `crates/agent/build.rs` cross-compiles the eBPF crate under nightly
   (clearing the inherited `RUSTUP_TOOLCHAIN` so the dir-scoped pin wins) and embeds it via
   `include_bytes_aligned!`. `cargo xtask build` / `cargo xtask run` are the canonical entrypoints.
-- [ ] **CO-RE/BTF:** generate `vmlinux.rs` (`aya-tool`) and rely on `/sys/kernel/btf/vmlinux`; never
-  hand-roll kernel structs. (Decision: one portable object over compile-per-kernel.)
-- [ ] **Decision: ring buffer over perf buffer** (`BPF_MAP_TYPE_RINGBUF` — MPSC, lossless, clean
-  reserve/commit). Sets the **min-kernel-5.8** floor. *(ADR to author.)*
+- [~] **CO-RE/BTF:** `cargo xtask codegen` mechanism + `mod vmlinux;` wiring in place (relies on
+  `/sys/kernel/btf/vmlinux`; one portable object via load-time relocation; never hand-roll structs).
+  Run `cargo xtask codegen` (needs `bpftool` + `aya-tool`) to populate `crates/ebpf/src/vmlinux.rs`
+  with `task_struct`; M1 is the first consumer. → [ADR-0002](docs/adr/0002-co-re-btf-over-compile-per-kernel.md)
+- [x] **Decision: ring buffer over perf buffer** (`BPF_MAP_TYPE_RINGBUF` — MPSC, lossless, clean
+  reserve/commit). Sets the **min-kernel-5.8** floor. → [ADR-0001](docs/adr/0001-ring-buffer-over-perf-buffer.md)
 - [ ] **Boot preflight** (shipped now, relied on everywhere after): probe BTF present, cgroup v2,
   kernel ≥ 5.8, and read `/sys/kernel/security/lsm`; if `bpf` is absent, `WARN` that LSM enforcement
   (M6) can't attach and will degrade.
@@ -97,7 +100,8 @@ by CI. No probes yet — just the skeleton everything hangs on.
   `cargo fmt --check`, `cargo deny check`.
 - [ ] CI: **eBPF load/verifier smoke-test in a microVM** (`lvh`/qemu, known kernel) — catches
   verifier/load regressions the bare GitHub runner can't.
-- [ ] ADR template + `docs/adr/` log; seed the **kernel/platform support matrix** doc.
+- [x] ADR template + [`docs/adr/`](docs/adr/) log; foundational decisions recorded as ADR-0001…0008.
+- [ ] Seed the **kernel/platform support matrix** doc.
 - [ ] Tag `v0.0.0` (loads + attaches a trivial no-op program, detaches cleanly on `Drop`).
 
 ## M1 — First probe: process execution ⭐
@@ -184,9 +188,11 @@ Per-pod GPU and inference signal generic kernel tools cannot produce — the wed
 inference pod, GPU util %, memory, SM occupancy, CUDA launch attribution, and (where exposed)
 tokens/sec, queue depth, KV-cache — all joined to pod identity via M2.
 
-- [ ] ADR: the hybrid GPU collector interface (three pluggable sources; degrade when one is absent).
+- [x] ADR: the hybrid GPU collector interface → [ADR-0008](docs/adr/0008-gpu-telemetry-hybrid-collector.md)
+  (DCGM/NVML values + ioctl attribution + mock; three pluggable sources, degrade when one is absent).
 - [ ] **Values (source of truth): NVML/DCGM** via the `nvml-wrapper` crate (model after
-  `dcgm-exporter`). `nvmlDeviceGetComputeRunningProcesses` → per-PID usage → join `PID → cgroup → pod`.
+  `dcgm-exporter`). `nvmlDeviceGetComputeRunningProcesses` → per-PID **GPU memory** (per-PID
+  *utilization* via `nvmlDeviceGetProcessUtilizationSamples`/DCGM) → join `PID → cgroup → pod`.
   Handles util, mem, SM occupancy, MIG.
 - [ ] **Attribution (the eBPF wedge): trace the NVIDIA driver `ioctl` boundary** (`/dev/nvidia*` +
   `/dev/nvidia-uvm`) for *which pod is on the GPU* — immune to static linking. `libcudart` uprobes
@@ -305,6 +311,8 @@ parallelizable. M5 needs M3+M4 signal; M6 builds on M3/M5; M7 can begin once M2 
 ---
 
 ## Architectural invariants (never traded away)
+
+> Each invariant traces to a decision record in [`docs/adr/`](docs/adr/) (ADR-0001…0008).
 
 - **The kernel is the source of truth; `common` is the contract.** Every `#[repr(C)]` event + the
   exporter proto is ABI: additive changes only, `EventHeader.version` + proto field numbers carry
