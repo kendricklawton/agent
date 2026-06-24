@@ -10,18 +10,25 @@ ignore = []
 multiple-versions = "warn"
 # Wildcard deps (foo = "*") break reproducibility.
 wildcards = "deny"
+# Known duplicates from aya's upstream tree — we don't import these directly and can't dedup
+# them. Skipping keeps the multiple-versions warning meaningful (only *our* dupes surface).
+# Revisit when aya updates: `cargo tree -i thiserror` / `-i hashbrown`.
+skip = [
+    { crate = "thiserror@1",      reason = "aya 0.13 uses thiserror 1; aya-build's cargo_metadata uses 2" },
+    { crate = "thiserror-impl@1", reason = "transitive with thiserror@1" },
+    { crate = "hashbrown@0.15",   reason = "aya-obj/object use 0.15; indexmap uses 0.17" },
+]
 
 [licenses]
 confidence-threshold = 0.8
-# Approved SPDX identifiers. aya is dual MIT/Apache-2.0; the BPF/LLVM toolchain pulls in
-# the LLVM exception. Add here only after reviewing a new dep's license.
+# Approved SPDX identifiers — only what the current tree actually uses. aya is dual
+# MIT/Apache-2.0; the BPF/LLVM toolchain pulls in the LLVM exception. Add a new entry (with a
+# reason) only after reviewing a dep that needs it — e.g. ISC/BSD-2/BSD-3 are common, so a future
+# dep may require re-adding them.
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
     "Unicode-3.0",
     "Zlib",
 ]

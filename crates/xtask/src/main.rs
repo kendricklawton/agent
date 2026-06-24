@@ -42,6 +42,8 @@ enum Cmd {
     /// Regenerate CO-RE kernel-struct bindings (`crates/ebpf/src/vmlinux.rs`) from host BTF.
     /// Requires `aya-tool` + `bpftool`.
     Codegen,
+    /// Run the full local check gate (fmt, clippy, build, test, deny) — mirrors CI. No root needed.
+    Ci,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -53,6 +55,7 @@ fn main() -> anyhow::Result<()> {
             run_as_root(&bin, &args)
         }
         Cmd::Codegen => codegen(),
+        Cmd::Ci => ci(),
     }
 }
 
@@ -62,6 +65,18 @@ fn build(release: bool) -> anyhow::Result<()> {
         args.push("--release");
     }
     cargo(&args)
+}
+
+/// Run the full local check gate — the same steps as CI — stopping at the first failure. No root
+/// needed (CI's eBPF *load* smoke-test is separate). Requires `cargo-deny` on PATH.
+fn ci() -> anyhow::Result<()> {
+    cargo(&["fmt", "--all", "--check"])?;
+    cargo(&["clippy", "--all-targets", "--", "-D", "warnings"])?;
+    build(false)?; // cross-compiles + embeds the eBPF object (a bare `cargo build` skips it)
+    cargo(&["test"])?;
+    cargo(&["deny", "check"])?;
+    println!("\n✓ all checks passed");
+    Ok(())
 }
 
 fn cargo(args: &[&str]) -> anyhow::Result<()> {

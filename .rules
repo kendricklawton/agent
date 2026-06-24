@@ -15,6 +15,7 @@ purpose-built to understand **GPU/AI inference** workloads. Open-core pair with 
 |------|---------|
 | Build (cross-compiles + embeds the eBPF object) | `cargo xtask build` |
 | Run the agent (loads eBPF — needs root) | `cargo xtask run -- --once` |
+| Full local check gate before pushing (no root) | `cargo xtask ci` |
 | Test (host, no privilege) | `cargo test` |
 | Lint — must be clean | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` |
 | Supply chain | `cargo deny check` |

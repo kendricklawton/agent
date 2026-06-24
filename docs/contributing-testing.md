@@ -38,7 +38,13 @@ privilege and run on every PR — and on macOS.
 
 ## Tier 2 — Build / lint gate
 
-The same checks CI runs first. All must be clean:
+The same checks CI runs first. All must be clean — run them in one shot before pushing:
+
+```console
+cargo xtask ci                                 # fmt + clippy + build + test + deny, stops at first failure
+```
+
+…or individually:
 
 ```console
 cargo xtask build                              # eBPF cross-compile + embed
