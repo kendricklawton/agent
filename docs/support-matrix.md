@@ -56,10 +56,15 @@ kept honest, not aspirational.
 
 | Platform | Status |
 |----------|--------|
-| Bare-metal Arch (dev box) | build + preflight + unit tests pass; live eBPF load (`cargo xtask run -- --once`) pending |
+| Bare-metal Arch `x86_64` (dev box) | build + preflight + unit tests pass; live eBPF load (`cargo xtask run -- --once`) pending |
 | GKE | planned |
 | EKS | planned |
 | AKS | planned |
 
-> Validate on GKE/EKS/AKS + at least one bare-metal kernel, and document anywhere BTF or BPF-LSM is
-> absent. See the [cross-cutting standards](../ROADMAP.md) in the roadmap.
+**CPU architectures:** `x86_64` is the current build/dev target; **`aarch64` (arm64)** joins the CI
+kernel matrix at **M9** (Graviton/Ampere GPU nodes are common, so arm64 is a first-class target, not
+an afterthought). The eBPF target is `bpfel-unknown-none` either way; the userspace binary is built
+per host arch.
+
+> Validate on GKE/EKS/AKS + at least one bare-metal kernel, across `x86_64` and `arm64`, and document
+> anywhere BTF or BPF-LSM is absent. See the [cross-cutting standards](../ROADMAP.md) in the roadmap.

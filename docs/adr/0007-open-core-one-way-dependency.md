@@ -27,6 +27,13 @@ We will enforce a **strictly one-way dependency: `agent-cloud` → `agent`, neve
 - No shortcut of "just import the cloud code" — shared logic that both need lives in the OSS contract,
   not the cloud.
 - Licensing is clean: OSS Apache-2.0 here; the cloud is proprietary and separate.
+- **Fleet management (M8) preserves this, not breaks it.** The M8 control channel lets the cloud push
+  to the agent (signed policy bundles + a fixed, audited verb set — snapshot/profile/drain/re-sync),
+  but the *code* dependency stays strictly one-way (the agent never imports `agent-cloud`; it speaks
+  the contract). It is **never a remote-code path** — only declarative, signature-verified policy — so
+  a compromised plane has a bounded blast radius, and **offline-first holds**: an unreachable plane
+  leaves the agent fully operational on its last-known-good bundle. Zero-cloud remains a first-class
+  mode. The channel's own design is recorded in the deferred M8 ADR.
 
 ## Alternatives considered
 - **Monorepo / tight coupling** between agent and cloud — rejected: the agent must stand alone, and

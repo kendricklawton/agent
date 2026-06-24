@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-06-23
 - **Deciders:** K-Henry
-- **Milestone:** M1 (the spine; evolves through M7)
+- **Milestone:** M1 (the spine; evolves additively through M7, frozen as **v1** at M10)
 
 ## Context
 `crates/common` is the contract spanning **kernel ⇄ userspace ⇄ cloud**. The three hops have
@@ -43,6 +43,9 @@ ABI evolution rule: **additive only** — never reorder/resize existing fields; 
   **not** catch it — the additive-only rule plus review is what guards layout there.)
 - `mnt_ns_inum` captured in M1 (before it's "needed") is the slower-recycling secondary key that lets
   M2 reconcile short-lived pods ([ADR-0006](0006-cold-start-and-resync-contract.md)).
+- The contract grows additively through the milestones and is **frozen as `v1` at M10** (platform GA),
+  where a conformance suite turns the additive-only rule into an enforced stability guarantee. The two
+  encodings stay in lockstep up to that point.
 
 ## Alternatives considered
 - **Protobuf everywhere (incl. kernel)** — rejected: not `no_std`/verifier-friendly, and adds hot-path

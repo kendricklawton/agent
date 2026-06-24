@@ -10,18 +10,23 @@ forever; when you need fleet-wide aggregation, storage, analytics, and complianc
 up that infra, you point your agents at the cloud. The moat is **GPU/AI-workload awareness** — the
 un-crowded slice generic tools miss — not generic k8s observability.
 
+This is a **platform**, not a single-purpose collector: the end state is a fleet-manageable runtime
+security and observability system for AI/GPU infrastructure — full kernel signal, k8s + GPU
+enrichment, a real policy language, optional enforcement, and a control channel — that stays a
+single self-contained binary and is fully usable with **zero cloud**.
+
 The shape it builds toward:
 
 ```
-            kernel space                      user space (crates/agent)                 off-node
- ┌───────────────────────────┐   ringbuf   ┌──────────────────────────────┐   gRPC   ┌────────────┐
- │ eBPF programs (crates/ebpf)│ ─────────▶ │ loader → decode → enrich →   │ ───────▶ │ agent-cloud│
- │  exec / connect / open /   │  (events)  │   rules → sinks               │ (M7)     │  (private) │
- │  LSM hooks                 │ ◀───────── │      ▲            │           │          └────────────┘
- │  policy maps               │   policy   │  crates/enrich  crates/rules  │
- └───────────────────────────┘            │  cgroup→container→pod cache   │
-        ▲ CO-RE / BTF                      │   + /proc baseline seed       │
-        │                                  └──────────────┬───────────────┘
+            kernel space                      user space (crates/agent)                  off-node
+ ┌───────────────────────────┐   ringbuf   ┌───────────────────────────────┐   gRPC   ┌────────────┐
+ │ eBPF programs (crates/ebpf)│ ─────────▶ │ loader → decode → enrich →    │ ───────▶ │ agent-cloud│
+ │  exec / fork / connect /   │  (events)  │   rules → enforce → sinks      │ events   │ (private   │
+ │  open / creds / LSM hooks  │ ◀───────── │      ▲           │        ▲     │ ◀─────── │  fleet     │
+ │  policy maps               │   policy   │  crates/enrich  rules   fleet   │ policy   │  plane)    │
+ └───────────────────────────┘            │  cgroup→pod +  (M5/6)  (M8)      │ bundles  └────────────┘
+        ▲ CO-RE / BTF                      │  process tree    │              │
+        │                                  └──────────────────┼──────────────┘
    bpf_get_current_cgroup_id                   NVML/DCGM + ioctl + /metrics (M4)
 ```
 
@@ -37,7 +42,9 @@ Five keystones hold it up:
    exporter consume the *same* events. Self-hosted and cloud-connected give the same signal; the
    cloud only aggregates. The contract never forks.
 3. **Dependencies point one way: cloud → OSS, never back.** The agent is **fully usable self-hosted
-   with zero cloud**. This repo never imports `agent-cloud`; CI enforces it.
+   with zero cloud**. It can be *fleet-managed* (M8) — pull signed policy, report health, take a
+   fixed verb set — but it is **offline-first**: a stale last-known-good policy keeps it fully
+   operational when the plane is unreachable. This repo never imports `agent-cloud`; CI enforces it.
 4. **The wedge is GPU/AI-workload awareness.** Every feature points at "for AI/GPU workloads" — GPU
    utilization, per-model latency, KV-cache, attribution to the pod/model. That's the differentiation.
 5. **One self-contained binary.** aya embeds the eBPF object into the userspace binary at build time
@@ -50,27 +57,40 @@ without breaking the verifier, the `common` ABI, the one-way dependency, or self
 If no, it sinks to a later milestone. **Correctness before performance — the verifier is the gate.
 Capture is never gated on enrichment.**
 
-Each milestone is a **git tag + a working demo + green CI**; we don't start one until the prior is
-green. Numbering (`M0`…`M7`) is shared with [`LEARN.md`](./LEARN.md) and [`.rules`](./.rules).
+This roadmap ladders to **`v0.10.0` — the platform release**, budgeted at roughly **100k lines of
+authored Rust** (see [*Scale & LOC budget*](#scale--loc-budget-the-0100-target)). Each milestone
+`M0…M10` maps to a minor tag `v0.0.0…v0.10.0` and is a **git tag + a working demo + green CI**; we
+don't start one until the prior is green. `0.10.0` is the goal line, **not `1.0`** — it marks the
+platform feature-complete and contract-stable; `1.0` is the later post-GA SemVer-commitment phase.
+Numbering is shared with [`LEARN.md`](./LEARN.md) and [`.rules`](./.rules).
 
 ---
 
 ## Milestone index
 
-| M | Milestone | Tag | Demo (observable outcome) | Cert |
-|---|-----------|-----|---------------------------|------|
-| 0 | **Scaffold & CI** | `v0.0.0` | `cargo xtask run` loads a no-op program on a real kernel; CI green for BPF + userspace | — |
-| 1 | **First probe (exec)** ⭐ | `v0.1.0` | run `/bin/ls` → typed `ExecEvent` (pid/ppid/uid/comm/cgroup) in userspace via ring buffer | — |
-| 2 | **k8s enrichment** ⭐ | `v0.2.0` | `kubectl exec` into a pod → event names the **pod/namespace/container** | CKS, RBAC |
-| 3 | **Network + file probes** | `v0.3.0` | `curl` from a pod → `ConnectEvent`; read a sensitive path → `FileEvent`, both enriched | CKS |
-| 4 | **GPU/AI telemetry** ⭐ | `v0.4.0` | per-pod GPU util/mem + inference KPIs joined to k8s identity (the differentiator) | — |
-| 5 | **Detection engine** | `v0.5.0` | declarative rules → alerts: "shell in an inference pod", "unexpected egress from a GPU node" | CKS |
-| 6 | **Enforcement (optional)** | `v0.6.0` | kill-on-match (`bpf_send_signal`) + egress deny; BPF-LSM deny where supported; audit-first | CKS |
-| 7 | **Exporter + packaging** | `v0.7.0` | gRPC stream to control plane; DaemonSet + Helm + RBAC; Prometheus `/metrics`; docs | CKA/CKS |
+| M | Milestone | Tag | LOC\* | Demo (observable outcome) |
+|---|-----------|-----|-------|---------------------------|
+| 0 | **Scaffold & CI** | `v0.0.0` | ~1k | `cargo xtask run` loads a no-op program on a real kernel; CI green for BPF + userspace |
+| 1 | **First probe (exec)** ⭐ | `v0.1.0` | ~2k | run `/bin/ls` → typed `ExecEvent` (pid/ppid/uid/comm/cgroup) in userspace via ring buffer |
+| 2 | **k8s enrichment** ⭐ | `v0.2.0` | ~12k | `kubectl exec` into a pod → event names the **pod/namespace/container/workload** |
+| 3 | **Full syscall surface** (net + file + identity) | `v0.3.0` | ~22k | `curl` → `ConnectEvent`; read a secret → `FileEvent`; DNS, `setuid`, fork/exit — all enriched |
+| 4 | **GPU/AI telemetry** ⭐ | `v0.4.0` | ~32k | per-pod GPU util/mem + inference KPIs joined to k8s identity (the differentiator) |
+| 5 | **Detection engine + policy language** | `v0.5.0` | ~44k | compile a rule → alert: "shell in an inference pod", "unexpected egress from a GPU node" |
+| 6 | **Enforcement** (optional) | `v0.6.0` | ~53k | kill-on-match (`bpf_send_signal`) + egress deny; BPF-LSM deny where supported; audit-first |
+| 7 | **Exporter + packaging** | `v0.7.0` | ~61k | gRPC/OTLP stream; DaemonSet + Helm + RBAC; Prometheus `/metrics`; offline-first |
+| 8 | **Fleet control & multi-tenancy** | `v0.8.0` | ~73k | signed OCI policy bundles pushed fleet-wide; per-node identity; tenant isolation; staged rollout |
+| 9 | **Hardening, scale & performance** | `v0.9.0` | ~85k | kernel + arch (x86_64/arm64) matrix green; perf budget held at 250-pod scale; fuzz + soak + chaos |
+| 10 | **Platform GA** ⭐ | `v0.10.0` | ~100k | stable ABI/proto v1, plugin SDK, conformance suite, full docs — the platform, end to end |
 
-> **Stop-and-ship:** after **M2** you have the signature demo — *drop a shell in a GPU inference pod
-> → the agent catches it and names the pod, in real time.* M4 (GPU) is the wedge; if time is short,
-> **M0 → M2 → M4 → M5** is the highest-signal portfolio path and M3/M6/M7 can follow.
+> \* **LOC** = *cumulative* authored Rust toward the `v0.10.0` target; excludes generated `vmlinux`
+> and vendored protos; ~30% is tests. It's the **shape** of the build, not a quota — we never pad to
+> hit it (see [*Scale & LOC budget*](#scale--loc-budget-the-0100-target)). The earlier "Cert"
+> mapping (CKS/CKA/RBAC as a learning byproduct) now lives in [`LEARN.md`](./LEARN.md).
+
+> **Signature demo (from M2 on):** *drop a shell in a GPU inference pod → the agent catches it and
+> names the pod, in real time.* M4 (GPU) is the wedge. The platform value compounds: M2 names it, M4
+> attributes it to a model, M5 alerts on it, M6 stops it, M8 pushes that policy across the fleet.
+> M0 → M2 → M4 → M5 is the earliest end-to-end story; M6–M10 turn it into a product.
 
 ---
 
@@ -80,7 +100,7 @@ by CI. No probes yet — just the skeleton everything hangs on.
 
 - [x] Cargo workspace + the `common` crate (the ABI spine; `Cargo.toml` with `members = ["crates/*"]`).
 - [x] Scaffold the remaining crates: `ebpf` (`no_std`, BPF target), `agent` (userspace, tokio),
-  `xtask` (build orchestration). `enrich`/`rules`/`exporter` deferred to their milestone.
+  `xtask` (build orchestration). `enrich`/`rules`/`exporter`/`fleet` deferred to their milestone.
 - [x] `rust-toolchain.toml` split: root pins **stable**; `crates/ebpf/rust-toolchain.toml` pins
   **nightly** (dir-scoped) for the BPF target (`bpfel-unknown-none`, `-Z build-std=core`, `bpf-linker`).
   → [ADR-0003](docs/adr/0003-stable-root-nightly-ebpf-toolchain-split.md)
@@ -141,7 +161,7 @@ The end-to-end pipeline for one event type — kernel hook → ring buffer → t
 
 ## M2 — Kubernetes enrichment ⭐ (the keystone)
 Turn a kernel `cgroup_id` into **pod / namespace / container / workload** — the join that makes
-everything else valuable, and the genuinely hard userspace engineering. **Demo (stop-and-ship):**
+everything else valuable, and the genuinely hard userspace engineering. **Demo:**
 `kubectl exec -it <pod> -- sh` → the exec event is labeled with its pod, namespace, container, and
 owning workload.
 
@@ -155,6 +175,9 @@ owning workload.
 - [ ] **`containerID → PodMeta`:** a **node-scoped** kube-rs reflector/watch
   (`fieldSelector=spec.nodeName=$NODE_NAME`, from downward-API `NODE_NAME`), indexed by
   `status.containerStatuses[].containerID`; evict on pod delete.
+- [ ] **Process-tree reconstruction:** stitch exec/fork/exit (the M3 lifecycle events) into per-pod
+  process ancestry so an event carries its parent chain, not just its own pid — the backbone every
+  detection rule and forensic trace leans on. Bounded, lifecycle-evicted.
 - [ ] **RBAC (the CKS/RBAC exercise):** a ServiceAccount with `get/list/watch` on `pods` (and
   `nodes`) only — no cluster-wide write.
 - [ ] **Cold-start & re-sync** (the architectural invariant — see [`.rules`](./.rules)): attach probes
@@ -171,22 +194,28 @@ owning workload.
 > unlinked before the `cgroup_id → path` lookup runs, resolving to nothing. The slower-recycling
 > `mnt_ns_inum` (captured in M1) is the secondary key that reconciles the dead workload.
 
-## M3 — Network + file probes
-Broaden signal to egress and file access, reusing the M1 envelope and M2 enrichment. **Demo:**
-`curl` from a pod → enriched `ConnectEvent`; `cat /etc/shadow` → enriched `FileEvent`.
+## M3 — Full syscall surface: network, file, identity
+Broaden signal from one event type to the surface a security platform needs — egress, file access,
+credential changes, and process lifecycle — reusing the M1 envelope and M2 enrichment. **Demo:**
+`curl` from a pod → enriched `ConnectEvent`; `cat /etc/shadow` → enriched `FileEvent`; `sudo` →
+`CredEvent`; a forking workload → a correct process tree.
 
 - [ ] **Network egress:** `kprobe`/`fexit` on `tcp_v4_connect`/`tcp_v6_connect`, reading
   `saddr/daddr/sport/dport/family` from `struct sock` via CO-RE. (Choose `cgroup/connect4|6`
   `BPF_PROG_TYPE_CGROUP_SOCK_ADDR` where it fits — **reused for enforcement in M6**, since it denies.)
+- [ ] **DNS visibility:** parse DNS query/response (tracepoint or socket filter) so egress reads as
+  names, not just IPs — the join most "unexpected egress" rules actually need.
 - [ ] **File access:** `fentry`/tracepoint on `do_sys_openat2`/`sys_enter_openat`; bounded path, flags,
   result. **Filter in-kernel** — opens are high-volume — via an `LPM_TRIE`/`HASH` of sensitive path
   prefixes (and/or sampling) so userspace never sees the firehose.
-- [ ] Add `ConnectEvent`/`FileEvent` to `common` sharing `EventHeader`; one ring buffer, demux by
-  `kind`. No new pipeline.
+- [ ] **Identity & lifecycle:** `setuid`/`setgid`/capability changes (`CredEvent`) and `fork`/`exit`
+  (feeding M2's process tree) — the events that turn raw execs into an attributable session.
+- [ ] Add `ConnectEvent`/`FileEvent`/`CredEvent`/`ExitEvent` to `common` sharing `EventHeader`; one
+  ring buffer, demux by `kind`. Additive ABI only. No new pipeline.
 - [ ] **Cost control:** per-cgroup token-bucket rate limiting in a BPF map; configurable ringbuf size;
   measure overhead under load against the budget.
-- [ ] **Tests:** VM/kind integration for IPv4 + IPv6 connect and sensitive-path open, each enriched;
-  zero ringbuf loss under a file-open storm with in-kernel filtering on.
+- [ ] **Tests:** VM/kind integration for IPv4 + IPv6 connect, DNS, sensitive-path open, and cred
+  change, each enriched; zero ringbuf loss under a file-open storm with in-kernel filtering on.
 
 ## M4 — GPU / AI telemetry ⭐ (the differentiator)
 Per-pod GPU and inference signal generic kernel tools cannot produce — the wedge. **Demo:** per
@@ -207,32 +236,36 @@ tokens/sec, queue depth, KV-cache — all joined to pod identity via M2.
 - [ ] Emit a periodic `GpuStatEvent` per pod (userspace-originated), unified downstream.
 - [ ] **Mock/synthetic collector** so the pipeline + rules (M5) are testable **without GPU hardware**;
   real-GPU e2e is a documented manual test on a spot GPU node.
-- [ ] NVIDIA first; keep the interface vendor-neutral (AMD/ROCm later).
+- [ ] NVIDIA first; keep the interface vendor-neutral (AMD/ROCm later — the seam that pays off at M9).
 
 > **Dragon — static `libcudart`:** vLLM/TGI/TensorRT-LLM frequently static-link CUDA into a fat
 > `.so`, so a `cudaLaunchKernel` uprobe has nothing to attach to and silently no-ops. The ioctl
 > boundary is the durable attribution signal; **DCGM/NVML remain authoritative for metric values**
 > (the ioctl ABI drifts across driver versions — version-gate it, treat it as activity, not numbers).
 
-## M5 — Detection engine
-Turn the event stream into **alerts** via declarative, hot-reloadable rules — Falco's intent without
-its full DSL. **Demo:** trigger "shell spawned in an inference pod" and "unexpected egress from a GPU
-node" → structured alerts on the local sink.
+## M5 — Detection engine + policy language
+Turn the event stream into **alerts** via a declarative, hot-reloadable **policy language** — Falco's
+intent, expressed as a real compiled rule language rather than ad-hoc matching. **Demo:** author and
+compile a rule, trigger "shell spawned in an inference pod" and "unexpected egress from a GPU node" →
+structured alerts on the local sink.
 
-- [ ] ADR: the rule schema + the stateful-evaluation model.
-- [ ] **Rule schema (YAML):** match event kind + fields (`comm`, `exe`, file path glob, dst CIDR/port,
-  GPU thresholds) **and pod context** (label selectors, workload kind) with `and/or/not` and per-rule
-  `severity`.
-- [ ] **Stateful evaluation:** maintain per-pod state from enrichment + GPU signal — "shell *in an
-  inference pod*" needs pod labels/serving-image (M2); "*unexpected* egress" needs a baseline
-  allowlist; crypto-miner heuristics combine a GPU-util spike (M4) with mining-port egress.
+- [ ] ADR: the policy language + the stateful-evaluation model + the compilation/versioning story.
+- [ ] **Policy language (the platform jump, not just a matcher):** a YAML/expression surface with a
+  real **lexer → typed AST → validator → compiler** to an evaluation form. Match event kind + fields
+  (`comm`, `exe`, file path glob, dst CIDR/port, DNS name, GPU thresholds) **and pod context** (label
+  selectors, workload kind) with `and/or/not`, severity, and reusable macros/lists. Type-checked at
+  compile time so a bad rule fails to load, never at event time.
+- [ ] **Stateful evaluation:** maintain per-pod state from enrichment + process tree + GPU signal —
+  "shell *in an inference pod*" needs pod labels/serving-image (M2); "*unexpected* egress" needs a
+  baseline allowlist; crypto-miner heuristics combine a GPU-util spike (M4) with mining-port egress.
 - [ ] **Output:** `Alert { rule_id, severity, event, pod, ts, message }` with dedup/throttling; local
   sinks = structured JSON logs + a Prometheus alert counter (value with zero cloud). Hot-reload via
-  `inotify`.
+  `inotify`, atomic compile-then-swap (never serve a half-applied ruleset).
 - [ ] **Starter ruleset:** shell-in-inference-pod, unexpected-egress, sensitive-file-read,
-  crypto-miner-heuristic.
-- [ ] **Tests:** golden-fixture `event → expected alert(s)` per rule (incl. stateful cases); malformed
-  rule files rejected on load; hot-reload drops no events.
+  crypto-miner-heuristic, privilege-escalation (from M3 cred events).
+- [ ] **Tests:** golden-fixture `event → expected alert(s)` per rule (incl. stateful cases); the
+  compiler rejects malformed/ill-typed rules on load; hot-reload drops no events; a fuzz target on the
+  rule parser (deepened in M9).
 
 ## M6 — Enforcement (optional)
 Act on detections — kill or block — with strong safety rails. Optional because kernel support varies;
@@ -266,7 +299,8 @@ events stream over mTLS; killing the endpoint doesn't disrupt local operation.
 
 - [ ] ADR: the exporter contract (proto schema) and the packaging/security posture.
 - [ ] **Exporter (`crates/exporter`):** `tonic` gRPC client streaming `Event`/`Alert`/`GpuStat`. The
-  **proto schema lives in `common`/`proto`** — the open-core contract `agent-cloud` imports.
+  **proto schema lives in `common`/`proto`** — the open-core contract `agent-cloud` imports. Optional
+  OTLP sink for teams already on an OpenTelemetry collector.
 - [ ] Batching, backpressure, **mTLS + auth token**, retry/backoff, at-least-once with a bounded local
   buffer (optional disk spool). Strictly optional — disabled, the agent is fully functional.
 - [ ] **Local-first sinks:** Prometheus `/metrics` (self-metrics + event/alert counters) + structured
@@ -281,7 +315,87 @@ events stream over mTLS; killing the endpoint doesn't disrupt local operation.
 - [ ] **Tests:** stream to a stub cloud over mTLS; endpoint death → buffer + reconnect, no local
   disruption; RBAC least-privilege verified by removing perms and seeing graceful degradation.
 - [ ] CI check: `agent` never depends on `agent-cloud`.
-- [ ] Tag `v0.7.0`; file remaining items as tracked issues.
+- [ ] Tag `v0.7.0`.
+
+## M8 — Fleet control & multi-tenancy
+The platform jump on the agent side: make a single agent **fleet-manageable** — pull signed policy,
+report health, accept a fixed, audited verb set from the control plane — without ever giving up
+offline-first operation or the one-way dependency. **Demo:** push a signed policy bundle from a stub
+control plane; it rolls out audit → canary → fleet; a second tenant's rules never touch the first;
+kill the plane and the agent keeps enforcing the last-known-good bundle.
+
+- [ ] ADR: the fleet control channel (bidirectional gRPC over the M7 mTLS link) and the
+  policy-bundle distribution + versioning model.
+- [ ] **Signed policy bundles:** rules + allowlists + GPU baselines packaged as **content-addressed,
+  cosign-signed OCI artifacts**; the agent pulls/receives, **verifies signature + digest before load**,
+  compiles (M5), and hot-swaps atomically — rolling back on compile or health regression.
+- [ ] **Fleet identity & enrollment:** per-node identity (SPIFFE/X.509 SVID), enrollment +
+  attestation, so the plane authenticates each agent and an agent only accepts policy for its tenant.
+- [ ] **Bidirectional control channel:** the plane can push config/policy and request a **fixed verb
+  set** (snapshot, profile, drain, re-sync) — capability-gated and fully audited. **Never a
+  remote-code path:** only declarative policy + that closed verb set, so the blast radius of a
+  compromised plane is bounded.
+- [ ] **Multi-tenancy:** per-tenant rule namespaces, quotas, and event routing with hard isolation;
+  one tenant can neither see nor perturb another's policy or signal.
+- [ ] **Staged rollout & canary:** a bundle version rolls out audit → a canary node set → namespace →
+  fleet, with **automatic rollback** on error-rate or agent-health regression.
+- [ ] **Offline-first preserved (the invariant under stress):** unreachable plane ⇒ keep running on
+  the stale-but-valid last-known-good bundle; reconcile on reconnect. Zero cloud is still a valid mode.
+- [ ] **Tests:** bundle signature/digest verify + rollback; tenant isolation (no cross-tenant leak);
+  control-channel authz on every verb; split-brain convergence; offline survival + reconcile.
+
+> **Dragon — split-brain policy:** a flapping channel or two sources deliver conflicting bundle
+> versions; the agent must converge **deterministically** (monotonic version + content digest, prefer
+> last-known-good) and **never oscillate enforcement** — flicker between allow/deny is worse than a
+> stale-but-stable decision.
+
+## M9 — Hardening, scale & performance
+Make it production-grade at fleet scale across the whole support matrix — the difference between "it
+runs" and "it runs on every node we have, forever, without becoming the problem." **Demo:** the
+kernel + arch matrix is green in CI; the perf budget holds on a 250-pod node under a syscall storm; a
+24h soak shows no leaks; chaos (plane death, GPU driver reload, kernel pressure) degrades gracefully.
+
+- [ ] ADR: the performance budget, the load-shedding model, and the supply-chain posture.
+- [ ] **Perf budget enforced in CI:** a benchmark harness with a repeatable workload; a regression
+  gate on CPU / memory / per-event latency; **published numbers** in the support matrix.
+- [ ] **Load shedding & adaptive sampling:** under pressure, per-cgroup rate limits + adaptive
+  sampling degrade gracefully and **never block the drain or the kernel** — bounded everything.
+- [ ] **Kernel + arch matrix green:** the `ebpf-smoke` microVM matrix across pinned kernels
+  (5.8 … latest) **and `aarch64` (arm64) in addition to `x86_64`**; gaps documented, not hidden.
+- [ ] **Multi-distro validation:** GKE/EKS/AKS + bare metal + hardened distros
+  (Flatcar/Bottlerocket/RHEL); LSM-stacking handled; second GPU vendor (AMD/ROCm) seam exercised.
+- [ ] **Fuzzing & property tests:** fuzz the event decoders, the rule compiler, and the cgroup/path
+  parsers; property tests on the ABI round-trip and enrichment cache invariants.
+- [ ] **Chaos & soak:** a multi-hour soak proving bounded caches (no leaks); chaos suites (kill the
+  plane, reload the GPU driver mid-stream, apply memory/CPU pressure) with graceful degradation.
+- [ ] **Supply chain:** reproducible builds, signed images + SBOM (cosign/syft), pinned deps,
+  `cargo deny` and advisory gates green; self-protection (watchdog, can't be starved into a blind spot).
+- [ ] **Tests:** the matrix is the test — every row above is a CI lane or a documented manual gate.
+
+> **Dragon — the observer that became the bottleneck:** at 250 pods × a high syscall rate, naive
+> enrichment or an unbounded cache makes the agent the noisy neighbor it exists to watch. Bound
+> everything; measure against the **worst case**, not the average; shed load before you block.
+
+## M10 — Platform GA (v0.10.0) ⭐
+Consolidate everything into a stable, extensible, documented platform release — the goal line.
+**Demo (the whole thing, end to end):** fresh multi-node cluster → `helm install` → fleet-managed
+agents → a GPU inference workload → push a signed policy bundle → drop a shell in the inference pod →
+caught, attributed to the model/pod, enforced, and streamed to the (stub) control plane.
+
+- [ ] ADR: the **v1 ABI/proto stability guarantee** and the plugin/extension interface.
+- [ ] **Stable contract:** freeze `EventHeader` + the event ABI + the exporter proto as **v1**
+  (additive-only thereafter); a **conformance suite** asserts a build honors the contract.
+- [ ] **Plugin / extension SDK:** a documented boundary (trait-based and/or WASM) for third-party
+  sinks, collectors, and rule functions — the platform extends **without forking core**.
+- [ ] **Conformance & certification suite:** a runnable suite a deployment passes to claim
+  "agent-compatible" — kernel features, enrichment correctness, rule semantics, enforcement safety.
+- [ ] **Full docs site:** install, operate, write-a-rule, write-a-plugin, architecture, security
+  model, support matrix, published performance numbers, and the upgrade/compatibility policy.
+- [ ] **Release engineering:** SemVer + deprecation policy, a stated support window, migration guides;
+  the path from `v0.10.0` toward a future `1.0` SemVer commitment is written down.
+- [ ] **Tests:** the conformance suite green on the full kernel/arch/distro matrix; the end-to-end
+  platform demo automated in `kind` + a manual GPU-node run.
+- [ ] Tag `v0.10.0` — **the platform release.**
 
 ---
 
@@ -292,27 +406,57 @@ events stream over mTLS; killing the endpoint doesn't disrupt local operation.
 - Min kernel **5.8** (ring buffer); BPF-LSM (M6) needs **5.7+** with `CONFIG_BPF_LSM` and `bpf` in the
   active LSM list (`lsm=...,bpf`) — preflighted via `/sys/kernel/security/lsm`. Requires CO-RE/BTF
   (`CONFIG_DEBUG_INFO_BTF`) and **cgroup v2**.
-- Validate on GKE/EKS/AKS + at least one bare-metal kernel; document where BTF or BPF-LSM is absent.
+- Validate on GKE/EKS/AKS + at least one bare-metal kernel; **`x86_64` and `arm64`** (M9); document
+  where BTF or BPF-LSM is absent.
 
 **Testing ladder:**
-- Unit (userspace): enrichment parsers, rule engine, decoders — table-driven fixtures.
+- Unit (userspace): enrichment parsers, the rule compiler, decoders — table-driven fixtures.
 - eBPF load/verifier tests in a microVM (`lvh`/qemu) in CI — verifier regressions the runner can't catch.
-- Integration in `kind`: enrichment, end-to-end event → alert, RBAC.
+- Integration in `kind`: enrichment, end-to-end event → alert, RBAC, fleet bundle rollout.
 - e2e on a real GPU node (manual/spot): M4 numbers + the full signature demo.
-- CI kernel matrix: build + load across a few kernel versions.
+- CI kernel + arch matrix: build + load across kernel versions and `x86_64`/`arm64`.
+- Fuzz + property + soak + chaos (M9): decoders, rule compiler, parsers; bounded-cache and ABI invariants.
 
 **Performance & overhead budget:** set a concrete budget (e.g. low single-digit % CPU on a busy
-node) and track it. Levers: in-kernel filtering (M3), per-cgroup rate limiting, ringbuf sizing,
-minimal per-event work. Benchmark with a repeatable workload; publish numbers.
+node) and track it from M3, **gate it in CI from M9**. Levers: in-kernel filtering (M3), per-cgroup
+rate limiting, adaptive sampling, ringbuf sizing, minimal per-event work. Benchmark with a repeatable
+workload; publish numbers in the support matrix.
 
 **Dependency / sequencing graph:**
 ```
-M0 ─▶ M1 ─▶ M2 ─┬─▶ M3 ─▶ M5 ─▶ M6
-                ├─▶ M4 ─────┘ (GPU rules need M4)
-                └─▶ M7  (packaging can start after M2; exporter proto firms up with M5/M6)
+M0 ─▶ M1 ─▶ M2 ─┬─▶ M3 ─▶ M5 ─▶ M6 ─┐
+                └─▶ M4 ─────┘        │
+                                     ▼
+                          M7 ─▶ M8 ─▶ M9 ─▶ M10 (GA / v0.10.0)
 ```
 M2 is the keystone — it unblocks every downstream signal. M3 and M4 are independent after M2 and
-parallelizable. M5 needs M3+M4 signal; M6 builds on M3/M5; M7 can begin once M2 stabilizes.
+parallelizable; M5 needs M3+M4 signal; M6 builds on M3/M5. M7 (exporter contract) firms up with
+M5/M6 and unblocks M8 (fleet, which speaks that contract). **M9 (hardening/scale) runs continuously
+from M3 onward but is the hard gate before M10 GA.**
+
+### Scale & LOC budget (the `0.10.0` target)
+`v0.10.0` is the platform release, budgeted at **~100k lines of authored Rust** (generated `vmlinux`
++ vendored protos excluded; ~30% is tests). The rough allocation — the *shape* of the system, not a
+quota:
+
+| Area | ~kLOC | What it is |
+|------|-------|------------|
+| eBPF programs (`crates/ebpf`) | ~10 | full syscall surface + GPU ioctl + LSM hooks, CO-RE across kernels |
+| `common` ABI + proto | ~3 | the kernel⇄userspace⇄cloud contract |
+| enrich (`crates/enrich`) | ~12 | cgroup→container→pod, process-tree reconstruction, identity, cache |
+| rules / detection (`crates/rules`) | ~12 | the policy language (lexer→AST→compiler), stateful eval, rulesets |
+| enforcement | ~8 | LSM/signal/egress backends, safety rails, the portability ladder |
+| GPU/AI telemetry | ~10 | NVML/DCGM, ioctl attribution, inference KPIs, MIG, vendor seam |
+| exporter + local sinks | ~6 | gRPC/OTLP, batching/backpressure, disk spool, `/metrics` |
+| fleet / control (`crates/fleet`) | ~8 | signed bundles, identity, multi-tenancy, staged rollout |
+| packaging / operability / config / self-protection | ~6 | Helm/DaemonSet, config model, watchdog, health |
+| tests (VM matrix, kind e2e, golden, fuzz, soak) | ~25 | proportional to running-in-the-kernel risk |
+| **Total** | **~100** | the platform at `v0.10.0` |
+
+This is a **multi-year, multi-engineer scope**. The honest unit of progress is the **milestone tag +
+demo + green CI**, not the line count — the LOC budget exists to size ambition and catch scope drift,
+and **we never pad code to hit it**. If a milestone lands its demo in far fewer lines, that's a win,
+not a miss; if it balloons past its row, that's a signal to split it.
 
 ---
 
@@ -324,7 +468,7 @@ parallelizable. M5 needs M3+M4 signal; M6 builds on M3/M5; M7 can begin once M2 
   exporter proto is ABI: additive changes only, `EventHeader.version` + proto field numbers carry
   compatibility, never reorder/resize existing fields. Types are **padding-free and `const`-asserted**;
   `ktime_ns`/`cgroup_id`/`mnt_ns_inum` are captured in-kernel. `synced`/`PodMeta` are userspace
-  annotations, not kernel ABI. The crate stays `no_std` and dependency-light.
+  annotations, not kernel ABI. The crate stays `no_std` and dependency-light. **Frozen as v1 at M10.**
 - **The verifier is the gate.** Correctness before performance. Zero the reserved ring-buffer slot
   before writing; keep events padding-free; bound every loop and `bpf_probe_read`. A program that
   doesn't load doesn't ship.
@@ -334,10 +478,14 @@ parallelizable. M5 needs M3+M4 signal; M6 builds on M3/M5; M7 can begin once M2 
   [`.rules`](./.rules).
 - **One self-contained binary, no sidecars.** eBPF embedded via aya; shipped as a single DaemonSet
   binary; `xtask` is dev-only. Minimal blast radius and attack surface.
-- **One-way dependency: cloud → OSS.** This repo never imports `agent-cloud`; the agent is fully
-  usable self-hosted with zero cloud. CI enforces it.
+- **One-way dependency: cloud → OSS, and offline-first.** This repo never imports `agent-cloud`; the
+  agent is fully usable self-hosted with zero cloud. Fleet management (M8) is a *fixed, audited verb
+  set + signed declarative policy* — **never a remote-code path** — and a stale last-known-good bundle
+  keeps the agent fully operational when the plane is gone. CI enforces the no-import rule.
 - **Every feature points at AI/GPU workloads** — the wedge generic tools miss is the only durable edge.
 - **Privileged but self-protecting:** least-privilege RBAC, named capabilities over `privileged`,
-  pinned/signed supply chain; the agent must never disable or kill itself.
+  pinned/signed supply chain (M9); the agent must never disable, starve, or kill itself, and bounds
+  every cache so it can't become the bottleneck it watches for.
 - **SemVer + a git tag per milestone**; the agent exports its own health/event/drop counters via
-  `/metrics` and readiness probes (from M7; informally earlier).
+  `/metrics` and readiness probes (from M7; informally earlier). `0.10.0` is the platform goal line;
+  the route to a `1.0` SemVer commitment is written down at M10.

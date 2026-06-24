@@ -11,15 +11,17 @@ attack surface, and operational simplicity. aya (pure Rust, no libbpf) **embeds 
 object into the userspace binary at build time** (`include_bytes_aligned!`) — no separate `.o`, no
 runtime clang/BCC, no libbpf C dependency — and can link statically against musl.
 
-The workspace has many crates (`common`, `ebpf`, `agent`, plus future `enrich`/`rules`/`exporter`),
-which could be mistaken for a multi-process design.
+The workspace has many crates (`common`, `ebpf`, `agent`, plus future
+`enrich`/`rules`/`exporter`/`fleet`), which could be mistaken for a multi-process design.
 
 ## Decision
 We will ship the OSS agent as **one self-contained binary** with the eBPF object embedded, deployed
 as a single **DaemonSet** (one pod per node), **with no sidecars**. The workspace crates are
 **library boundaries, not processes** — they link into the one `agent` binary. `xtask` is a dev-only
-build tool, never shipped. GPU collection, the rules engine, optional enforcement, and the cloud
-exporter are all **in-process modules**, not separate containers.
+build tool, never shipped. GPU collection, the rules engine, optional enforcement, the cloud exporter,
+and the fleet-control client (M8) are all **in-process modules**, not separate containers. The plugin
+/ extension SDK (M10) extends the binary in-process (trait-based and/or WASM) — it adds extensibility
+without adding a sidecar.
 
 ## Consequences
 - Minimal blast radius and attack surface; one artifact to build, sign, deploy, and reason about;

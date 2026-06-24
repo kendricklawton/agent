@@ -4,7 +4,8 @@
 
 ## Milestone flow
 
-Work is organized into milestones `M0`…`M7` ([`ROADMAP.md`](../ROADMAP.md)). Each milestone:
+Work is organized into milestones `M0`…`M10`, laddering to the `v0.10.0` platform release
+([`ROADMAP.md`](../ROADMAP.md)). Each milestone:
 
 - **opens with an ADR** that records the load-bearing decision before the code,
 - ends with a **git tag + a working demo + green CI**, and

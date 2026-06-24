@@ -22,5 +22,8 @@ the relevant ROADMAP item.
 | [0007](0007-open-core-one-way-dependency.md) | Open-core: one-way dependency (cloud → OSS) | Accepted | cross-cutting |
 | [0008](0008-gpu-telemetry-hybrid-collector.md) | GPU telemetry: DCGM/NVML values + ioctl attribution | Accepted | M4 |
 
-Deferred (written when their milestone begins): the enrichment join (M2), the detection rule schema
-(M5), the enforcement portability ladder (M6), and the exporter proto contract (M7).
+Deferred (written when their milestone begins): the enrichment join (M2), the policy language +
+stateful-evaluation model (M5), the enforcement portability ladder (M6), the exporter proto contract
+(M7), the fleet control channel + signed policy-bundle distribution (M8), the performance budget /
+load-shedding / supply-chain posture (M9), and the v1 ABI/proto stability guarantee + plugin interface
+(M10).

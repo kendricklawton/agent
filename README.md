@@ -3,8 +3,10 @@
 Open-source **eBPF node agent** for Kubernetes — observes and secures workloads, purpose-built to
 understand **GPU/AI inference** workloads.
 
-> **Status:** early scaffold (M0). The `common` event contract exists; probes and enrichment are
-> in progress. See [`ROADMAP.md`](./ROADMAP.md) for the staged build plan.
+> **Status:** early — **M1 done** (the first probe: `exec` → ring buffer → typed event, verified on a
+> real kernel). The `common` event contract + the `sched_process_exec` probe exist; k8s enrichment
+> (M2) is next. [`ROADMAP.md`](./ROADMAP.md) lays out the staged build toward `v0.10.0` — the platform
+> release.
 
 ## Why
 Generic runtime-security/observability tools (Falco, Tetragon, Pixie) don't understand GPU or
@@ -35,17 +37,22 @@ crates/agent     userspace binary: loads eBPF, reads the ring buffer, enriches, 
 crates/enrich    k8s metadata enrichment via kube-rs
 crates/rules     detection engine
 crates/exporter  ship events to the control plane (gRPC/proto)
+crates/fleet     fleet control: signed policy bundles, node identity, multi-tenancy (M8)
 xtask            build orchestration (compile eBPF + run)
 ```
-(Only `crates/common` exists today; the rest land per the roadmap.)
+(`common`, `ebpf`, `agent`, and `xtask` exist today; `enrich`/`rules`/`exporter`/`fleet` land per the roadmap.)
 
 ## Open-core
 `agent` is fully usable self-hosted with no cloud. The optional **`agent-cloud`** (private) is a
 fleet control plane — multi-cluster analytics, storage, alerting. Dependencies point **one way**:
 `agent-cloud` → `agent`. This repo never imports the cloud.
 
+## Security
+`agent` is privileged (loads eBPF, can kill/deny in enforcement mode). Report vulnerabilities
+**privately** — see [`SECURITY.md`](./SECURITY.md).
+
 ## License
-Apache-2.0.
+[Apache-2.0](./LICENSE).
 
 ---
 See [`.rules`](./.rules) for contributor/agent guidance and [`ROADMAP.md`](./ROADMAP.md) for the

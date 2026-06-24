@@ -3,7 +3,7 @@
 - **Status:** Proposed | Accepted | Superseded by [ADR-XXXX](XXXX-slug.md) | Deprecated
 - **Date:** YYYY-MM-DD
 - **Deciders:** <who>
-- **Milestone:** <M0…M7 | cross-cutting>
+- **Milestone:** <M0…M10 | cross-cutting>
 
 ## Context
 The forces at play — the problem, the constraints, the requirements — and why a decision is needed
