@@ -9,6 +9,9 @@ publish = false
 # toolchain pinned in ./rust-toolchain.toml; embedded into the `agent` binary by its build.rs.
 [dependencies]
 aya-ebpf.workspace = true
+# The event ABI. Pulled WITHOUT the `pod` feature, so bytemuck never reaches the BPF target —
+# the kernel side writes fields in place, it doesn't cast bytes.
+agent-common.workspace = true
 
 [[bin]]
 name = "agent-ebpf"

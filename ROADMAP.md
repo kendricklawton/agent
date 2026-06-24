@@ -112,23 +112,27 @@ The end-to-end pipeline for one event type — kernel hook → ring buffer → t
 - [x] **Define the event ABI in `crates/common`** — `EventHeader` (with in-kernel `ktime_ns`),
   `EventKind`, and `ExecEvent` (incl. `cgroup_id` **and** `mnt_ns_inum`). Padding-free by
   construction (u64s first); `const _: () = assert!(size_of::<T>() == …)` guards the layout.
-- [ ] **Hook:** raw tracepoint `sched/sched_process_exec` — the canonical "a process started" signal,
-  post-exec so `comm`/exe are stable (over an arch-specific `kprobe` on `__x64_sys_execve`).
-- [ ] **In-kernel capture:** `pid/tgid`, `uid/gid`, `comm`, `cgroup_id` (`bpf_get_current_cgroup_id`),
-  `ppid` (`task → real_parent → tgid`), and the **mount-ns inode** `task → nsproxy → mnt_ns → ns.inum`
-  (all CO-RE); stamp `ktime_ns` via `bpf_ktime_get_ns()`.
-- [ ] **Write discipline:** reserve a ring-buffer slot, **zero the whole slot, then write fields in
+- [x] **Hook:** **regular** tracepoint `sched/sched_process_exec` — canonical "a process started"
+  signal, post-exec so `comm`/exe are stable. (Chose `#[tracepoint]` over a raw tracepoint:
+  `EbpfContext` gives pid/uid/comm for free and the args are less CO-RE-coupled for no gain on
+  low-frequency exec.)
+- [~] **In-kernel capture:** done — `pid` (tgid), `uid/gid`, `comm`, `cgroup_id`
+  (`bpf_get_current_cgroup_id`), `ktime_ns` (`bpf_ktime_get_ns`), and the exec `filename` (tracepoint
+  `__data_loc`). **Pending Part B (CO-RE):** `ppid` (`task → real_parent → tgid`) and the **mount-ns
+  inode** (`task → nsproxy → mnt_ns → ns.inum`) — needs `cargo xtask codegen` (`bpftool`+`aya-tool`).
+- [x] **Write discipline:** reserve a ring-buffer slot, **zero the whole slot, then write fields in
   place** — never build on the 512-byte stack and copy. (The verifier rejects any uninitialized,
   incl. padding, byte reaching `bpf_ringbuf_submit` as *invalid indirect read from stack*.)
-- [ ] **Userspace:** consume `aya::maps::RingBuf` async (tokio `AsyncFd`); cast bytes → struct
-  (`bytemuck`/`aya::Pod`); dispatch on `hdr.kind`; handle partial reads + shutdown (detach on `Drop`).
-- [ ] **Loader guard:** validate the ring-buffer size is a **power of two and a page multiple**
-  before `bpf_map_create` (else `-EINVAL` with no diagnostic). *(Moved from M0 — the ring buffer
-  first exists here.)*
+- [x] **Userspace:** consume `aya::maps::RingBuf` async (tokio `AsyncFd`); cast bytes → struct
+  (`bytemuck`); dispatch on `hdr.kind`; handle partial reads + shutdown (detach on `Drop`).
+- [x] **Loader guard:** ring-buffer size is a **power of two and a page multiple** — enforced as a
+  compile-time `const`-assert in `agent_common` (the size is baked into the object, so it's a build-time
+  guard, not a runtime one). *(Moved from M0 — the ring buffer first exists here.)*
 - [ ] Bounded `argv` capture (a few args, truncated) via `bpf_probe_read_user` under `#[unroll]` —
   every read guarded for the verifier.
-- [ ] **Tests:** deterministic VM integration test (spawn a known binary → assert one `ExecEvent`);
-  zero events lost in a tight exec loop; no verifier rejections.
+- [~] **Tests:** unit done — the ABI byte round-trip + `EventKind` + preflight parsing. **Pending:**
+  deterministic VM integration test (spawn a known binary → assert one `ExecEvent`) + zero-loss under a
+  tight exec loop (needs root / the `ebpf-smoke.yml` microVM).
 
 > **Why `mnt_ns_inum` + `ktime` from M1, not later:** the mount-ns inode is a slower-recycling
 > *secondary* identity key that lets M2 reconcile short-lived pods whose cgroup dir is unlinked

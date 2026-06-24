@@ -8,7 +8,8 @@ ignore = []
 [bans]
 # Multiple versions of one crate usually mean a missed dedup; surface them.
 multiple-versions = "warn"
-# Wildcard deps (foo = "*") break reproducibility.
+# Wildcard deps (foo = "*") break reproducibility. (The intra-workspace `agent-common` path dep
+# carries an explicit `version` in the workspace table, so it isn't a wildcard.)
 wildcards = "deny"
 # Known duplicates from aya's upstream tree — we don't import these directly and can't dedup
 # them. Skipping keeps the multiple-versions warning meaningful (only *our* dupes surface).

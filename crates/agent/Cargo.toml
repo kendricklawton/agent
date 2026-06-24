@@ -8,7 +8,9 @@ license.workspace = true
 # ring buffer, enriches, evaluates rules, and exports. The eBPF object is compiled under nightly
 # and embedded by build.rs (see the workspace toolchain split).
 [dependencies]
+agent-common                 = { workspace = true, features = ["pod"] }
 aya.workspace                = true
+bytemuck.workspace           = true
 tokio.workspace              = true
 anyhow.workspace             = true
 clap.workspace               = true

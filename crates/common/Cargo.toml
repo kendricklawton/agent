@@ -7,6 +7,12 @@ license.workspace = true
 # The contract crate: shared event types between the eBPF (kernel) side, the userspace
 # agent, and (via gRPC/proto) agent-cloud. Keep it no_std and dependency-light.
 [dependencies]
+bytemuck = { workspace = true, optional = true }
+
+[features]
+# Userspace enables `pod` to derive bytemuck Pod/Zeroable for zero-copy byte casting off the ring
+# buffer. The eBPF crate omits it (writes fields in place), keeping bytemuck off the BPF target.
+pod = ["dep:bytemuck"]
 
 [lints]
 workspace = true

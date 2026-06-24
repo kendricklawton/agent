@@ -66,6 +66,7 @@ impl TryFrom<u32> for EventKind {
 /// explicit reserved bytes. `_pad`/`_reserved` exist so every byte is a real, zeroable field.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "pod", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct EventHeader {
     /// `bpf_ktime_get_ns()`, stamped in-kernel at event creation (monotonic).
     pub ktime_ns: u64,
@@ -86,6 +87,7 @@ pub struct EventHeader {
 /// it reconciles short-lived pods whose cgroup directory is unlinked before enrichment runs.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "pod", derive(bytemuck::Pod, bytemuck::Zeroable))]
 pub struct ExecEvent {
     pub hdr: EventHeader,
     pub pid: u32,
@@ -105,6 +107,15 @@ const _: () = assert!(size_of::<EventHeader>() == 24);
 const _: () = assert!(
     size_of::<ExecEvent>() == size_of::<EventHeader>() + (4 + 4 + 4 + 4) + (8 + 8) + 16 + 256
 );
+
+/// Ring-buffer capacity for the kernel→userspace event channel (`BPF_MAP_TYPE_RINGBUF`). Declared
+/// here so both the eBPF map and any userspace sizing share one constant.
+///
+/// The size **must** be a power of two **and** a page multiple, or `bpf_map_create` returns
+/// `-EINVAL` with no diagnostic. The assert below is the M1 "loader guard" — enforced at **build
+/// time**, since the size is baked into the eBPF object (there's nothing to check at load time).
+pub const RING_BUF_BYTES: u32 = 256 * 1024;
+const _: () = assert!(RING_BUF_BYTES.is_power_of_two() && RING_BUF_BYTES.is_multiple_of(4096));
 
 #[cfg(test)]
 mod tests {
@@ -130,5 +141,27 @@ mod tests {
             EventKind::try_from(u32::MAX),
             Err(UnknownEventKind(u32::MAX))
         );
+    }
+
+    #[cfg(feature = "pod")]
+    #[test]
+    fn exec_event_roundtrips_through_bytes() {
+        // Proves the userspace cast path: write fields → serialize → cast back, byte-for-byte.
+        use bytemuck::Zeroable as _;
+        let mut ev = ExecEvent::zeroed();
+        ev.hdr.kind = EventKind::Exec.as_u32();
+        ev.hdr.len = size_of::<ExecEvent>() as u32;
+        ev.pid = 4242;
+        ev.cgroup_id = 0xdead_beef;
+        ev.comm[..2].copy_from_slice(b"ls");
+
+        let bytes = bytemuck::bytes_of(&ev);
+        assert_eq!(bytes.len(), size_of::<ExecEvent>());
+        let back: &ExecEvent = bytemuck::from_bytes(bytes);
+
+        assert_eq!(back.pid, 4242);
+        assert_eq!(back.cgroup_id, 0xdead_beef);
+        assert_eq!(&back.comm[..2], b"ls");
+        assert_eq!(EventKind::try_from(back.hdr.kind), Ok(EventKind::Exec));
     }
 }
