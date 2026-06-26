@@ -75,13 +75,51 @@ optionally-remote GPU monitor.** Each milestone `M0…M10` maps to a tag and is 
 demo + green CI**; we don't start one until the prior is green. NVIDIA/NVML first; the collector is
 built behind a trait so AMD/ROCm and Intel can follow without touching any surface.
 
+## §0.5 The engineering contract (what every milestone leans on)
+
+§0 fixes *what* and *why*; this pins the *how* that **M1 forces and every later milestone inherits** —
+the cross-cutting decisions that, left implicit, get re-litigated mid-milestone. Defaults below are
+recommended, not sacred; each is recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md) when its milestone lands.
+
+1. **Data flow — the engine owns the loop.** `Collector::sample(&mut self) -> Result<Vec<DeviceSample>,
+   CollectError>` is **synchronous** and returns the *current readings only* — it owns **no thread and no
+   clock**. The **engine** owns one sampling loop (a single background task, default ~1 Hz, configurable),
+   calls `sample()`, **timestamps** it, appends to `core`'s ring buffers, and assembles an immutable
+   **`Snapshot`** (devices now; processes M4, inference M6, multi-host M9). The engine publishes the latest
+   `Arc<Snapshot>` through **one `ArcSwap`/`watch` cell**; surfaces hold a cheap clone and read **lock-free**.
+   `core` is `Send + Sync`; **no surface ever holds the collector.** A new snapshot *wakes* the surfaces (GUI
+   `request_repaint()`, TUI loop, sinks publish) — never a busy spin. This is keystone 6 and the
+   sample-rate-≠-frame-rate split made concrete.
+2. **The two seam traits (mirrored, synchronous, error-as-value).** In: `Collector::sample() ->
+   Result<Vec<DeviceSample>, CollectError>`. Out: `Sink::publish(&mut self, snap: &Snapshot) ->
+   Result<(), SinkError>` — reads a snapshot, never a source. **Both are sync at the boundary; errors are
+   values, never panics** (no-panic discipline). Async (HTTP scrape, NVML) lives *inside* implementations on
+   the engine's runtime, behind the sync call — it never leaks into the trait or a surface.
+3. **Time & history — one clock.** Every sample is stamped by the **engine** (monotonic), not the source, so
+   NVML + inference + remote align for the M6 join and the M9 merge. Ring buffers are **fixed-count**, sized
+   `history_window / sample_interval` (so "a few minutes" is config, not a leak). Time-series widgets
+   **decimate to viewport pixels** (min/max per column) — never tessellate N points into P pixels.
+4. **Configuration — one model, set once.** Precedence: **flags > `AGENT_*` env > TOML at the platform
+   config dir > defaults.** `app` resolves one `Config` and hands it to the engine; surfaces never read
+   config piecemeal. It owns sample interval, history window, source (mock/NVML/DCGM), inference endpoints
+   (M6), sinks (M8), remote hosts (M9), alert rules (M7). Introduced minimally in M1; each milestone **adds
+   keys, never a new mechanism.**
+5. **Signal states — how "no data" looks.** A monitor's value is largely *how it renders the absence of a
+   signal.* One enum, rendered explicitly by **every** surface, never a panic or a blank:
+   **`Ok · NoData · Asleep · Unsupported · PermissionDenied · Stale{age} · Offline{host}`**. Everywhere this
+   roadmap says "degrade gracefully," it means *render one of these.*
+6. **Wire-contract stability — scripts and dashboards depend on us.** `ps --json` carries a top-level
+   **`schema_version`**; fields are **additive-only** within a major. Prometheus metrics live in a documented
+   **`agent_*`** namespace. Renaming a JSON field or a metric is a **SemVer-major break** — it silently
+   breaks someone's `jq` or Grafana panel. The *human* table may change freely; the *machine* contracts may not.
+
 ---
 
 ## Milestone index
 
 | M | Milestone | Tag | Surface | Demo (observable outcome) |
 |---|-----------|-----|---------|---------------------------|
-| 0 | **Scaffold & CI** | `v0.0.0` | both | one binary; `gui` opens a 60-fps window, `ps` prints a stub table; CI green; decisions recorded |
+| 0 | **Scaffold & CI** | `v0.0.0` | both | one binary; `gui` opens a window that renders at display refresh, `ps` prints a stub table; CI green; decisions recorded |
 | 1 | **First metric — GUI + CLI** ⭐ | `v0.1.0` | both | one GPU's util/mem live as a GUI sparkline *and* as `ps --json` — the engine feeding two surfaces |
 | 2 | **Single-GPU dashboard** | `v0.2.0` | GUI (+`ps`) | a polished real-time GUI view of one GPU: util, mem, temp, power, clocks, occupancy, PCIe + history |
 | 3 | **Live TUI — `top`** ⭐ | `v0.3.0` | TUI | `<app> top` over SSH: a beautiful live terminal dashboard, the same model as the GUI |
@@ -106,7 +144,9 @@ built behind a trait so AMD/ROCm and Intel can follow without touching any surfa
 A reproducible Rust build: one binary that dispatches subcommands, opens a GPU-accelerated window
 *and* prints a CLI table, gated by CI. No real metrics yet — the skeleton and the core decisions.
 
-- [ ] Cargo workspace + the crate split (below). Rename the repo/crates off `agent`.
+- [ ] Cargo workspace + the crate split (below).
+- [ ] **Rename off `agent` (R8):** the repo, crates (`agent-*`), binary, and all docs — one discrete
+  pre-M1 commit, before external eyes. Disruptive once people depend on names; cheap now.
 - [ ] **Binary dispatch (the DX spine):** `app` is one binary with subcommands — `gui` (default on a
   desktop) · `top` (live TUI) · `ps` (one-shot, `--json`) · `serve` (M9). On a headless box with no
   display, bare invocation falls back to `top` with a hint. Docker/Ollama-style verbs.
@@ -151,7 +191,9 @@ numbers for a script — both reading the identical `core`.
   **idle when nothing changed** (adaptive frame rate, not a busy spin).
 - [ ] **CLI:** `ps` prints a human table of current device state; `ps --json` prints structured JSON
   (the scripting contract — stable field names, exit codes).
-- [ ] **Decouple cleanly:** GUI and CLI read only `core`; swapping mock↔NVML changes neither frontend.
+- [ ] **Decouple cleanly (§0.5):** the engine owns the sample loop and publishes an immutable `Snapshot`
+  (`ArcSwap`); GUI and CLI read only `core`; swapping mock↔NVML changes neither frontend. **This wires the
+  data-flow contract (R1) the rest of the roadmap assumes.**
 - [ ] **Tests:** `core` ring-buffer semantics (bounded, ordered, wraps); the mock collector drives a
   headless loop and asserts the model advances; `ps --json` output is golden-tested — all without a GPU.
 
@@ -244,8 +286,9 @@ Make it a tool you *leave running* and *automate against*. **Demo:** overnight, 
 chart and a notification that GPU 3 went idle at 02:14; and `<app> ps --json --watch | jq` streams live
 metrics to a script.
 
-- [ ] **Persisted history:** spill ring buffers to a small on-disk store (embedded TS / SQLite) so
-  history survives restarts; scrub back over hours in GUI and TUI.
+- [ ] **Persisted history:** spill ring buffers to a small on-disk store (**SQLite via `rusqlite`** — R3,
+  ubiquitous + queryable; `redb` if a pure-Rust/no-C store is preferred) so history survives restarts;
+  scrub back over hours in GUI and TUI.
 - [ ] **Alerts:** user-set thresholds (idle > N min, temp, power, mem nearing OOM, tokens/sec dropping)
   → native desktop notifications **and** CLI exit codes / stderr (so `cron`/scripts can act on them).
 - [ ] **Scriptable CLI:** `ps --json` (one-shot) and `--watch` (a stream of JSON lines) — a stable,
@@ -285,14 +328,14 @@ Watch machines that aren't your laptop, from either frontend. **Demo:** one GUI/
 remote hosts. **Local-first stays intact** — remote is opt-in.
 
 - [ ] **`serve` — the thin headless collector:** the same binary in a headless mode (`<app> serve`)
-  reuses `collector` + `core` to sample a host and serve snapshots (small gRPC / stream) — minimal
-  footprint, the Ollama-style invisible daemon. Built on the **M8 HTTP server**, now also streaming
-  snapshots, not just `/metrics`.
+  reuses `collector` + `core` to sample a host and serve snapshots by **reusing the M8 HTTP server** —
+  newline-delimited JSON / SSE stream, **not** gRPC (R4: heavier, no win at this scale) — minimal
+  footprint, the Ollama-style invisible daemon. Streams snapshots, not just `/metrics`.
 - [ ] **Aggregate in both frontends:** add remote hosts by address; the GUI and TUI render local +
   remote devices uniformly (the headless-engine split pays off — frontends don't care where samples
   originate). Model the world as **hosts → devices**, with localhost as host #1.
-- [ ] **Secure + resilient:** authenticated transport; a dead host degrades to a clear "offline" tile,
-  never hangs a frontend; auto-reconnect.
+- [ ] **Secure + resilient:** **bearer-token auth, TLS optional** (R4); off by default (local-first); a
+  dead host degrades to a clear `Offline{host}` tile (§0.5), never hangs a frontend; auto-reconnect.
 - [ ] **Tests:** `serve` returns correct snapshots; multi-host model merge; host-down/reconnect.
 
 > **Note:** "watch *my handful of machines* from one screen" — a desktop app talking to thin
@@ -363,6 +406,26 @@ remote (M9) is in. Rough shape: `core` small and central; `collector` moderate (
 pure views); tests ~30%. **The number is an estimate to size the work, never a goal** — the unit of
 progress is the milestone tag + demo + green CI, and a smaller line count is a win. (The CLI/TUI and the
 sinks all add little *because* they reuse `core` — that's the headless-engine dividend.)
+
+---
+
+## Risks & open decisions (the dragons)
+
+A roadmap that hides its forks isn't dense, it's vague. These are the unresolved decisions and known
+landmines — each with a **recommended default** and the **milestone that must close it**. Resolutions are
+recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md) as they land.
+
+| # | Decision / risk | Recommended default | Close by |
+|---|-----------------|---------------------|----------|
+| R1 | Snapshot publication (engine → surfaces) | `ArcSwap<Arc<Snapshot>>` + per-surface wake (§0.5) | M1 |
+| R2 | NVML per-process util is driver-/permission-gated and flaky (`nvmlDeviceGetProcessUtilizationSamples`) | VRAM-per-PID always; util-per-PID best-effort with a signal state; DCGM where present | M4 |
+| R3 | Persistence engine | **SQLite** (`rusqlite`); `redb` if pure-Rust/no-C is required | M7 |
+| R4 | Remote protocol + auth | reuse the M8 HTTP server: **NDJSON/SSE + bearer token, TLS optional**; not gRPC | M9 |
+| R5 | wgpu GUI smoke in headless CI | GUI smoke stays **manual**; CI covers `ps`/`top`/sinks headlessly; `lavapipe` software-fallback as a smoke only, never a perf gate | M0 / ongoing |
+| R6 | Inference metric-name drift across runtimes/versions | normalize at the parser into one model; pinned fixtures per runtime; label what's missing | M6 |
+| R7 | MIG enumeration + NVML API-level skew | MIG instances are first-class devices; probe capabilities, degrade per signal state; document the min driver | M5 |
+| R8 | The repo/crate **rename off `agent`** is disruptive | one discrete pre-M1 commit, before external eyes | pre-M1 |
+| R9 | The overhead budget has no enforcement | a `criterion` startup + steady-state bench; the in-app self-overhead panel (M2); regressions are bugs | M2 |
 
 ---
 

@@ -12,7 +12,7 @@ the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, *
 NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
 is still named `agent`; the rename is a pre-M1 task).
 
-> **Status:** the **M0 scaffold is in place** — the workspace builds, `cargo run -p gpumon -- ps`
+> **Status:** the **M0 scaffold is in place** — the workspace builds, `cargo run -p agent -- ps`
 > shows the mock source, and `gui`/`top` point at their milestones (M1/M3). The crates
 > (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at M1. The repo is still
 > named `agent` pending the rename.
@@ -21,10 +21,10 @@ is still named `agent`; the rename is a pre-M1 task).
 | Task | Command |
 |------|---------|
 | Build | `cargo build` |
-| Run the GUI (default) | `cargo run -p gpumon -- gui` |
-| Run the live TUI | `cargo run -p gpumon -- top` |
-| One-shot snapshot (scriptable) | `cargo run -p gpumon -- ps` · `… -- ps --json` |
-| Run with **no GPU** (mock source) | append `--mock` (or `GPUMON_SOURCE=mock`) |
+| Run the GUI (default) | `cargo run -p agent -- gui` |
+| Run the live TUI | `cargo run -p agent -- top` |
+| One-shot snapshot (scriptable) | `cargo run -p agent -- ps` · `… -- ps --json` |
+| Run with **no GPU** (mock source) | append `--mock` (or `AGENT_SOURCE=mock`) |
 | Full local gate before pushing | `cargo xtask ci` (build + clippy + fmt + test + deny) |
 | Test (headless, no GPU needed) | `cargo test` |
 | Lint — must be clean | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` |

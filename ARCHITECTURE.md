@@ -23,10 +23,13 @@ exportable, and remote-capable. If a surface reaches into a data source, the des
    (remote hosts, M9, are just another source feeding the same model)
 ```
 
-The flow is one-directional: **`collector` → `core` → {GUI, TUI, CLI, sinks}`**. Sources push samples
-onto a background task at a sane interval; `core` holds bounded, fixed-capacity ring buffers; the
-surfaces read a snapshot and render or emit it. Adding a metric means updating the model **once** and
-the thin renderers/sinks — never duplicating logic, never a GUI-only metric (frontend parity).
+The flow is one-directional: **`collector` → `core` → {GUI, TUI, CLI, sinks}`**. The **engine** owns one
+sampling loop — it calls the collector's synchronous `sample()` at a sane interval (the collector owns no
+thread or clock), timestamps the readings, and appends them to `core`'s bounded, fixed-capacity ring
+buffers; surfaces read an immutable snapshot and render or emit it. Adding a metric means updating the
+model **once** and the thin renderers/sinks — never duplicating logic, never a GUI-only metric (frontend
+parity). *(The full data-flow contract — snapshot publication, the seam traits, signal states — is pinned
+in [`ROADMAP.md`](./ROADMAP.md) §0.5.)*
 
 ## The crates
 
@@ -84,6 +87,32 @@ Unprivileged userspace — no root, no kernel modules. For real data you need a 
   collector), **Splunk** (OTLP or HEC). Optional, composable with the frontends.
 - **GUI vs. headless:** the GUI needs a display + a `wgpu`-capable GPU (or a software fallback); the
   `top` TUI and `ps` run anywhere, including over SSH on headless boxes.
+
+## Extension model & non-goals
+
+How you build *on* agent — and the lines we won't cross. All three fall out of the headless-engine split.
+
+- **Extend via the two traits, not a public API.** The crates are library-shaped (`core`/`collector`/`ui`/
+  `cli`/`export` are libs; `app` is a thin shell), so the engine *is* a library internally. But the
+  **committed** extension surface is the **`Collector` and `Sink` traits** plus the **wire contracts**
+  (`ps --json`, `/metrics`, OTLP) — **not** an embeddable Rust API. A new GPU vendor is a `Collector`; a
+  new exporter is a `Sink`; a consumer reads the wire contracts in any language. `agent-core`'s Rust API
+  is **not** SemVer-guaranteed pre-1.0; promoting it to a supported embeddable library is a deliberate
+  post-1.0 decision, only if real demand appears. *Why:* a public API is a heavy SemVer/maintenance
+  burden, and "integrate, don't reimplement" means people consume our **data**, not our crates.
+- **Daemon mode is opt-in and additive — never the default.** agent is local-first and zero-config:
+  launch it, see your GPUs, no service required. Running headless as a background worker — the **M8**
+  exporter (`/metrics` alongside any mode) or the **M9** `serve` collector (the Ollama-style invisible
+  daemon, managed by `systemd`/a container) — is purely additive; disabling it leaves a fully useful
+  foreground tool. *Why:* never-a-hog and local-first; a monitor you must stand up as a service has lost
+  the plot.
+- **Non-goals (the anti-platform line).** agent is **not** a time-series database, a dashboard, or an
+  alerting platform — it *exposes* data to the stack you already run (M8). It is **not** a
+  general-purpose GPU-telemetry library — it's an application with a trait-based extension SDK. And it is
+  **not** a hosted/SaaS product: **local-first and peer-to-peer, nothing leaves your infrastructure
+  without explicit opt-in.** Any cloud/SaaS variant would be a **separate project in its own repo** — never
+  this one. If a feature starts to look like storage, dashboards, a public engine API, or a hosted backend,
+  it's on the wrong side of the line.
 
 ## Invariants
 

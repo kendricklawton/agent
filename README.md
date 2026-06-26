@@ -1,4 +1,4 @@
-# gpumon *(working name)*
+# agent *(name TBD)*
 
 A native, open-source **GPU & AI-inference monitor** — written in **Rust**, with both a
 GPU-accelerated **GUI** and a terminal **CLI/TUI**. See what your GPUs and inference servers are
@@ -6,7 +6,7 @@ actually doing: in a gorgeous window on your desk, live in your terminal over SS
 pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes.
 
 > **Status:** early — pivoted from an eBPF agent. The **M0 scaffold is in place** (the workspace
-> builds; `gpumon ps` already shows a mock source); **M1** (real NVML metrics on screen) is next. The
+> builds; `agent ps` already shows a mock source); **M1** (real NVML metrics on screen) is next. The
 > plan ladders to `v1.0.0`. The repo is still named `agent` pending a rename.
 
 ## Why
@@ -35,10 +35,10 @@ and demos with **no GPU present** (a mock data source).
 
 ## Usage *(target — pre-release)*
 ```
-gpumon              # launch the GUI (default)
-gpumon top          # live TUI in the terminal
-gpumon ps           # one-shot snapshot table
-gpumon ps --json    # ... as JSON, for scripts
+agent              # launch the GUI (default)
+agent top          # live TUI in the terminal
+agent ps           # one-shot snapshot table
+agent ps --json    # ... as JSON, for scripts
 ```
 (`serve`, the thin headless collector for remote monitoring, arrives in M9.)
 There's no published binary yet — to **try it today, build from source**: see

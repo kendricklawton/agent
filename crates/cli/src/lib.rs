@@ -1,9 +1,9 @@
-//! `gpumon-cli` — the terminal frontend: one-shot `ps` (+ `--json`) and the live `top` TUI.
+//! `agent-cli` — the terminal frontend: one-shot `ps` (+ `--json`) and the live `top` TUI.
 //!
-//! A pure view of [`gpumon_core`](gpumon_core) (see ARCHITECTURE.md). `ps` works today against any
+//! A pure view of [`agent_core`](agent_core) (see ARCHITECTURE.md). `ps` works today against any
 //! collector; the live `top` dashboard (`ratatui`) is wired in M3.
 
-use gpumon_core::Collector;
+use agent_core::Collector;
 
 /// One-shot snapshot of current device state. `--json` emits the scripting contract.
 ///

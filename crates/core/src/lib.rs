@@ -1,4 +1,4 @@
-//! `gpumon-core` — the data model and the source of truth for the monitor.
+//! `agent-core` — the data model and the source of truth for the monitor.
 //!
 //! Device/process snapshots, bounded time series, and the [`Collector`] trait every data source
 //! implements. **Every frontend (GUI/TUI/CLI) renders this** and nothing else — see ARCHITECTURE.md

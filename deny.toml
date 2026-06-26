@@ -7,7 +7,7 @@ ignore = []
 [bans]
 # Multiple versions of one crate usually mean a missed dedup; surface them.
 multiple-versions = "warn"
-# Wildcard deps (foo = "*") break reproducibility. The internal `gpumon-*` path deps carry explicit
+# Wildcard deps (foo = "*") break reproducibility. The internal `agent-*` path deps carry explicit
 # versions in the workspace table, so they aren't wildcards.
 wildcards = "deny"
 

@@ -3,6 +3,45 @@
 version = 4
 
 [[package]]
+name = "agent"
+version = "0.1.0"
+dependencies = [
+ "agent-cli",
+ "agent-collector",
+ "agent-core",
+ "agent-ui",
+ "anyhow",
+ "clap",
+]
+
+[[package]]
+name = "agent-cli"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "anyhow",
+]
+
+[[package]]
+name = "agent-collector"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+]
+
+[[package]]
+name = "agent-core"
+version = "0.1.0"
+
+[[package]]
+name = "agent-ui"
+version = "0.1.0"
+dependencies = [
+ "agent-core",
+ "anyhow",
+]
+
+[[package]]
 name = "anstyle"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -51,45 +90,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "gpumon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "gpumon-cli",
- "gpumon-collector",
- "gpumon-core",
- "gpumon-ui",
-]
-
-[[package]]
-name = "gpumon-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gpumon-core",
-]
-
-[[package]]
-name = "gpumon-collector"
-version = "0.1.0"
-dependencies = [
- "gpumon-core",
-]
-
-[[package]]
-name = "gpumon-core"
-version = "0.1.0"
-
-[[package]]
-name = "gpumon-ui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gpumon-core",
-]
 
 [[package]]
 name = "heck"

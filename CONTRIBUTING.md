@@ -25,18 +25,18 @@ Prometheus/OTLP.
 git clone <repo> && cd agent
 cargo build
 
-# Run a frontend (`-p gpumon` selects the app; the workspace also has the `xtask` binary):
-cargo run -p gpumon -- gui       # the GPU-accelerated window (the default subcommand)
-cargo run -p gpumon -- top       # the live terminal TUI (great over SSH)
-cargo run -p gpumon -- ps        # one-shot snapshot table — works today against the mock source
-cargo run -p gpumon -- ps --json # the same, as structured JSON for scripts
+# Run a frontend (`-p agent` selects the app; the workspace also has the `xtask` binary):
+cargo run -p agent -- gui       # the GPU-accelerated window (the default subcommand)
+cargo run -p agent -- top       # the live terminal TUI (great over SSH)
+cargo run -p agent -- ps        # one-shot snapshot table — works today against the mock source
+cargo run -p agent -- ps --json # the same, as structured JSON for scripts
 
 # No GPU? Drive any of the above from the mock source:
-cargo run -p gpumon -- top --mock   # or: GPUMON_SOURCE=mock cargo run -p gpumon -- top
+cargo run -p agent -- top --mock   # or: AGENT_SOURCE=mock cargo run -p agent -- top
 ```
 
 A bare `cargo build` builds the whole workspace — nothing is cross-compiled or embedded. Build one
-crate with `cargo build -p <crate>` (e.g. `-p gpumon-core`).
+crate with `cargo build -p <crate>` (e.g. `-p agent-core`).
 
 ## Before you push — the local gate
 

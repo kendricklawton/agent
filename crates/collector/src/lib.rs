@@ -1,4 +1,4 @@
-//! `gpumon-collector` — data sources behind the [`Collector`](gpumon_core::Collector) trait.
+//! `agent-collector` — data sources behind the [`Collector`](agent_core::Collector) trait.
 //!
 //! The `mock` source is permanent and needs no GPU (see ARCHITECTURE.md): it keeps every build/test/demo path
 //! working with no driver present. The NVML source (the source of truth), DCGM, and the inference
@@ -6,10 +6,10 @@
 
 use std::time::SystemTime;
 
-use gpumon_core::{CollectError, Collector, DeviceSample};
+use agent_core::{CollectError, Collector, DeviceSample};
 
 /// A synthetic source: a slow triangle wave per device, so the app builds, tests, and demos with no
-/// GPU. Select it with `--mock` (or `GPUMON_SOURCE=mock`). Permanent and first-class.
+/// GPU. Select it with `--mock` (or `AGENT_SOURCE=mock`). Permanent and first-class.
 pub struct MockCollector {
     tick: u64,
     devices: u32,
