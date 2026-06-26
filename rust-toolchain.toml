@@ -1,7 +1,5 @@
-# Root toolchain — pinned STABLE for the userspace/host crates (agent, common, xtask).
-# Reproducible builds + the full house-style lint gate run on stable. The eBPF crate
-# overrides this with its own directory-scoped nightly pin (crates/ebpf/rust-toolchain.toml),
-# since aya's BPF target still requires nightly + `-Z build-std`.
+# Stable toolchain for the whole workspace — plain Rust on `std`, one host target. No nightly and no
+# special compile targets (that was the old eBPF project).
 [toolchain]
 channel    = "1.94.1"
 components = ["rustfmt", "clippy"]

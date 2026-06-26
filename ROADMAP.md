@@ -1,491 +1,392 @@
-# Roadmap — `agent` (OSS, Rust + eBPF/aya)
+# Roadmap — a native GPU & inference monitor (Rust): GUI + CLI
+
+> **This roadmap supersedes the prior eBPF Kubernetes-agent plan.** The project is a **native GPU and
+> AI-inference monitor** — a single Rust binary with **two first-class frontends**: a GPU-accelerated
+> **GUI** *and* a terminal **CLI/TUI** — and it plugs into the observability stack you already run
+> (Prometheus / OTLP / Splunk). In the spirit of Zed, Ghostty, and Ollama: open-source, fast,
+> single-binary, no Electron, craft-first.
+> **Working name:** *TBD* (the repo is still `agent`; renaming the repo + crates is a pre-M1 task).
 
 ## §0 The spine
 
-**`agent` is the open-source eBPF node agent you run in your own cluster; `agent-cloud` is the
-hosted fleet control plane — the *same* event contract, aggregated across clusters, run for teams
-who don't want to operate that control plane themselves.** The model is **open-core** (Falco →
-Sysdig, Tetragon → Isovalent, Parca → Polar Signals): you run the agent free and self-hosted
-forever; when you need fleet-wide aggregation, storage, analytics, and compliance without standing
-up that infra, you point your agents at the cloud. The moat is **GPU/AI-workload awareness** — the
-un-crowded slice generic tools miss — not generic k8s observability.
+**One tool that shows — beautifully and in real time — what your GPUs and inference servers are
+actually doing, however you want to look at it: a gorgeous native window on your desk, a live view in
+your terminal over SSH, a one-shot `--json` you pipe into a script, or a `/metrics` endpoint your
+Prometheus already scrapes.** `nvidia-smi` is a CLI snapshot; `nvtop` is a TUI with no history or
+inference awareness; `dcgm-exporter` + Grafana is a server you stand up. None of them is *one fast,
+native, inference-aware tool that's equally good in a window, in a terminal, and in your dashboards*.
+That gap is the whole project.
 
-This is a **platform**, not a single-purpose collector: the end state is a fleet-manageable runtime
-security and observability system for AI/GPU infrastructure — full kernel signal, k8s + GPU
-enrichment, a real policy language, optional enforcement, and a control channel — that stays a
-single self-contained binary and is fully usable with **zero cloud**.
+The wedge — why build this and not just run `nvtop`:
 
-The shape it builds toward:
+1. **Native craft, two ways.** A `wgpu`-rendered **GUI** *and* a `ratatui` **TUI**, one single binary,
+   instant startup, buttery real-time. The Zed/Ghostty bar for the window; the htop/Ghostty bar for the
+   terminal. It should feel *good* whether it's on a second monitor or in an SSH session.
+2. **Inference-workload awareness.** Not just hardware counters — attribute GPU use to the
+   **process → model/server**, and surface **tokens/sec, queue depth, KV-cache, batch size** from
+   Ollama/vLLM/Triton. That's the part `nvtop` structurally can't do.
+
+The shape it builds toward — **one headless engine, many surfaces (human and machine):**
 
 ```
-            kernel space                      user space (crates/agent)                  off-node
- ┌───────────────────────────┐   ringbuf   ┌───────────────────────────────┐   gRPC   ┌────────────┐
- │ eBPF programs (crates/ebpf)│ ─────────▶ │ loader → decode → enrich →    │ ───────▶ │ agent-cloud│
- │  exec / fork / connect /   │  (events)  │   rules → enforce → sinks      │ events   │ (private   │
- │  open / creds / LSM hooks  │ ◀───────── │      ▲           │        ▲     │ ◀─────── │  fleet     │
- │  policy maps               │   policy   │  crates/enrich  rules   fleet   │ policy   │  plane)    │
- └───────────────────────────┘            │  cgroup→pod +  (M5/6)  (M8)      │ bundles  └────────────┘
-        ▲ CO-RE / BTF                      │  process tree    │              │
-        │                                  └──────────────────┼──────────────┘
-   bpf_get_current_cgroup_id                   NVML/DCGM + ioctl + /metrics (M4)
+   data sources                core (the headless engine)         surfaces — human + machine
+ ┌──────────────────┐  sample  ┌─────────────────────┐  read    ┌───────────────────────────────┐
+ │ NVML  (values)   │ ───────▶ │  device/process     │ ───────▶ │ GUI   wgpu/egui window          │
+ │ DCGM  (optional) │          │  snapshots +        │  ├─────▶ │ TUI   `top`  (ratatui)          │
+ │ Ollama/vLLM/...  │          │  ring-buffer series │  ├─────▶ │ CLI   `ps --json`  (one-shot)   │
+ │ mock  (no GPU)   │          │  + inference join   │  └─────▶ │ Sinks Prometheus · OTLP · Splunk │
+ └──────────────────┘          └──────────┬──────────┘          └───────────────────────────────┘
+        ▲ remote hosts (M9) ──────────────┘   one engine · many surfaces (human + machine) · local or remote
 ```
 
-Five keystones hold it up:
+Seven keystones hold it up:
 
-1. **The kernel is the source of truth; `crates/common` is the contract.** eBPF programs emit
-   `#[repr(C)]` events through one ring buffer; that crate is the ABI between kernel ⇄ userspace ⇄
-   cloud. It stays `no_std`, dependency-light, and **padding-free** (the verifier rejects
-   uninitialized bytes). Identity (`cgroup_id`, `mnt_ns_inum`, `ktime_ns`) is captured **in-kernel,
-   at event time** — the only moment it's guaranteed to exist. If this drifts, everything downstream
-   breaks.
-2. **One event contract, consumed two ways.** Local sinks (logs / `/metrics` / alerts) and the cloud
-   exporter consume the *same* events. Self-hosted and cloud-connected give the same signal; the
-   cloud only aggregates. The contract never forks.
-3. **Dependencies point one way: cloud → OSS, never back.** The agent is **fully usable self-hosted
-   with zero cloud**. It can be *fleet-managed* (M8) — pull signed policy, report health, take a
-   fixed verb set — but it is **offline-first**: a stale last-known-good policy keeps it fully
-   operational when the plane is unreachable. This repo never imports `agent-cloud`; CI enforces it.
-4. **The wedge is GPU/AI-workload awareness.** Every feature points at "for AI/GPU workloads" — GPU
-   utilization, per-model latency, KV-cache, attribution to the pod/model. That's the differentiation.
-5. **One self-contained binary.** aya embeds the eBPF object into the userspace binary at build time
-   (no libbpf, no runtime toolchain); the workspace's many crates are library boundaries, not
-   processes (`xtask` is dev-only). Shipped as a single DaemonSet binary — **no sidecars** — for
-   minimal blast radius and attack surface. (The inverse of `agent-cloud`, which *is* multi-service.)
+1. **Headless engine, pure-view surfaces.** A headless `collector` feeds an in-memory model (`core`);
+   **every surface — GUI, TUI, one-shot CLI, and every machine sink (Prometheus/OTLP) — only *renders*
+   `core`.** No surface talks to NVML directly. This is what makes the app testable without a screen,
+   demoable without a GPU, scriptable, exportable, and remote-capable. If a surface reaches into a data
+   source, the design has broken.
+2. **Two first-class frontends, one binary.** A native **GUI** for the desk and a **CLI/TUI** for the
+   terminal/SSH/scripting — *neither is an afterthought*. One binary, subcommands (the Docker/Ollama
+   DX): `gui` (default) · `top` (live TUI) · `ps` (one-shot, `--json`) · `serve` (M9). Every metric is
+   reachable in all three human surfaces.
+3. **Native and fast — no Electron, ever.** GUI via `wgpu`, TUI via `ratatui`, one statically-linkable
+   binary, sub-second cold start. This is the craft bar; a choice that trades it away is the wrong one.
+4. **Inference-aware is the differentiator.** Model attribution + serving KPIs (Ollama/vLLM/Triton) are
+   *why this exists*; generic hardware counters are table stakes.
+5. **Local-first, zero-config.** Launch it → your local GPUs (and any running Ollama/vLLM) are *already
+   there* — no server, account, or config file. Exporters (M8), remote (M9), and persistence (M7) are
+   purely additive.
+6. **A monitor must never be a hog.** The tool that watches resource use cannot itself burn a core.
+   Sample sanely, render on change (adaptive frame rate, idle when backgrounded), bound every buffer,
+   and surface our *own* CPU/GPU/RAM.
+7. **Integrate, don't reimplement.** The monitor plugs into the observability stack you already run —
+   a Prometheus `/metrics` endpoint, OTLP, Splunk (M8) — as *machine-facing pure views of `core`*, the
+   mirror of the human frontends. We expose data; we never become a dashboard, a time-series database,
+   or an alerting platform. That's the **anti-platform** move: plug into theirs, don't rebuild it.
 
-**The discipline test for every step:** *does this deepen kernel-level signal or k8s/GPU enrichment
-without breaking the verifier, the `common` ABI, the one-way dependency, or self-hostable-zero-cloud?*
-If no, it sinks to a later milestone. **Correctness before performance — the verifier is the gate.
-Capture is never gated on enrichment.**
+**The discipline test for every step:** *does this make the GPU/inference picture clearer or a surface
+faster/nicer, without coupling a surface to a data source, bloating startup, making the monitor heavy,
+or reimplementing something the user's stack already does?* If no, it sinks to a later milestone.
+**Correctness and feel before features.**
 
-This roadmap ladders to **`v0.10.0` — the platform release**, budgeted at roughly **100k lines of
-authored Rust** (see [*Scale & LOC budget*](#scale--loc-budget-the-0100-target)). Each milestone
-`M0…M10` maps to a minor tag `v0.0.0…v0.10.0` and is a **git tag + a working demo + green CI**; we
-don't start one until the prior is green. `0.10.0` is the goal line, **not `1.0`** — it marks the
-platform feature-complete and contract-stable; `1.0` is the later post-GA SemVer-commitment phase.
-Numbering is shared with [`LEARN.md`](./LEARN.md) and [`.rules`](./.rules).
+This roadmap ladders to **`v1.0.0` — a polished, inference-aware, GUI-and-CLI, exportable,
+optionally-remote GPU monitor.** Each milestone `M0…M10` maps to a tag and is a **git tag + a working
+demo + green CI**; we don't start one until the prior is green. NVIDIA/NVML first; the collector is
+built behind a trait so AMD/ROCm and Intel can follow without touching any surface.
 
 ---
 
 ## Milestone index
 
-| M | Milestone | Tag | LOC\* | Demo (observable outcome) |
-|---|-----------|-----|-------|---------------------------|
-| 0 | **Scaffold & CI** | `v0.0.0` | ~1k | `cargo xtask run` loads a no-op program on a real kernel; CI green for BPF + userspace |
-| 1 | **First probe (exec)** ⭐ | `v0.1.0` | ~2k | run `/bin/ls` → typed `ExecEvent` (pid/ppid/uid/comm/cgroup) in userspace via ring buffer |
-| 2 | **k8s enrichment** ⭐ | `v0.2.0` | ~12k | `kubectl exec` into a pod → event names the **pod/namespace/container/workload** |
-| 3 | **Full syscall surface** (net + file + identity) | `v0.3.0` | ~22k | `curl` → `ConnectEvent`; read a secret → `FileEvent`; DNS, `setuid`, fork/exit — all enriched |
-| 4 | **GPU/AI telemetry** ⭐ | `v0.4.0` | ~32k | per-pod GPU util/mem + inference KPIs joined to k8s identity (the differentiator) |
-| 5 | **Detection engine + policy language** | `v0.5.0` | ~44k | compile a rule → alert: "shell in an inference pod", "unexpected egress from a GPU node" |
-| 6 | **Enforcement** (optional) | `v0.6.0` | ~53k | kill-on-match (`bpf_send_signal`) + egress deny; BPF-LSM deny where supported; audit-first |
-| 7 | **Exporter + packaging** | `v0.7.0` | ~61k | gRPC/OTLP stream; DaemonSet + Helm + RBAC; Prometheus `/metrics`; offline-first |
-| 8 | **Fleet control & multi-tenancy** | `v0.8.0` | ~73k | signed OCI policy bundles pushed fleet-wide; per-node identity; tenant isolation; staged rollout |
-| 9 | **Hardening, scale & performance** | `v0.9.0` | ~85k | kernel + arch (x86_64/arm64) matrix green; perf budget held at 250-pod scale; fuzz + soak + chaos |
-| 10 | **Platform GA** ⭐ | `v0.10.0` | ~100k | stable ABI/proto v1, plugin SDK, conformance suite, full docs — the platform, end to end |
+| M | Milestone | Tag | Surface | Demo (observable outcome) |
+|---|-----------|-----|---------|---------------------------|
+| 0 | **Scaffold & CI** | `v0.0.0` | both | one binary; `gui` opens a 60-fps window, `ps` prints a stub table; CI green; decisions recorded |
+| 1 | **First metric — GUI + CLI** ⭐ | `v0.1.0` | both | one GPU's util/mem live as a GUI sparkline *and* as `ps --json` — the engine feeding two surfaces |
+| 2 | **Single-GPU dashboard** | `v0.2.0` | GUI (+`ps`) | a polished real-time GUI view of one GPU: util, mem, temp, power, clocks, occupancy, PCIe + history |
+| 3 | **Live TUI — `top`** ⭐ | `v0.3.0` | TUI | `<app> top` over SSH: a beautiful live terminal dashboard, the same model as the GUI |
+| 4 | **Per-process attribution** | `v0.4.0` | both | which PID/process holds how much VRAM + GPU time — sortable in GUI and TUI, listable via `ps` |
+| 5 | **Multi-GPU + MIG** | `v0.5.0` | both | an 8-GPU box (and MIG slices) at a glance — a GUI grid and a TUI list |
+| 6 | **Inference-workload awareness** ⭐ | `v0.6.0` | both | Ollama/vLLM tokens/sec + KV-cache shown next to the GPU it's saturating, joined by process |
+| 7 | **History, alerts & scripting** | `v0.7.0` | both | persisted history + desktop/CLI alerts; `ps --json --watch` for piping; the GUI craft pass |
+| 8 | **Exporters & integrations** | `v0.8.0` | sinks | Prometheus scrapes `/metrics`; the same GPU+inference data lands in your existing Grafana / Splunk |
+| 9 | **Remote & multi-host** | `v0.9.0` | both | `serve` a thin headless collector; watch several machines from one GUI/TUI |
+| 10 | **1.0 — packaging & release** ⭐ | `v1.0.0` | all | `brew install` / AppImage → it just runs; signed releases; `collector` + `sink` traits stable |
 
-> \* **LOC** = *cumulative* authored Rust toward the `v0.10.0` target; excludes generated `vmlinux`
-> and vendored protos; ~30% is tests. It's the **shape** of the build, not a quota — we never pad to
-> hit it (see [*Scale & LOC budget*](#scale--loc-budget-the-0100-target)). The earlier "Cert"
-> mapping (CKS/CKA/RBAC as a learning byproduct) now lives in [`LEARN.md`](./LEARN.md).
-
-> **Signature demo (from M2 on):** *drop a shell in a GPU inference pod → the agent catches it and
-> names the pod, in real time.* M4 (GPU) is the wedge. The platform value compounds: M2 names it, M4
-> attributes it to a model, M5 alerts on it, M6 stops it, M8 pushes that policy across the fleet.
-> M0 → M2 → M4 → M5 is the earliest end-to-end story; M6–M10 turn it into a product.
+> **Earliest "wow":** M1 — one metric, live, in *both* a window and the terminal — proves the whole
+> headless-engine-many-surfaces design. **The hook is M6** — tokens/sec next to GPU saturation is the
+> thing no other local tool shows. The signature demo rides on **M4** (the model↔GPU join uses process
+> attribution), so the fastest credible path is **M0→M1→M2→M3→M4→M6**; M5 (multi-GPU) is the main piece
+> you can defer for a single-box demo. (M6's Ollama-only beachhead view can land with lighter
+> attribution, since `/api/ps` reports the model's GPU directly — see M6.)
 
 ---
 
 ## M0 — Scaffold & CI
-A reproducible build of both a BPF object and the userspace binary, loadable on a real kernel, gated
-by CI. No probes yet — just the skeleton everything hangs on.
+A reproducible Rust build: one binary that dispatches subcommands, opens a GPU-accelerated window
+*and* prints a CLI table, gated by CI. No real metrics yet — the skeleton and the core decisions.
 
-- [x] Cargo workspace + the `common` crate (the ABI spine; `Cargo.toml` with `members = ["crates/*"]`).
-- [x] Scaffold the remaining crates: `ebpf` (`no_std`, BPF target), `agent` (userspace, tokio),
-  `xtask` (build orchestration). `enrich`/`rules`/`exporter`/`fleet` deferred to their milestone.
-- [x] `rust-toolchain.toml` split: root pins **stable**; `crates/ebpf/rust-toolchain.toml` pins
-  **nightly** (dir-scoped) for the BPF target (`bpfel-unknown-none`, `-Z build-std=core`, `bpf-linker`).
-  → [ADR-0003](docs/adr/0003-stable-root-nightly-ebpf-toolchain-split.md)
-- [x] **`xtask` + build wiring**: `crates/agent/build.rs` cross-compiles the eBPF crate under nightly
-  (clearing the inherited `RUSTUP_TOOLCHAIN` so the dir-scoped pin wins) and embeds it via
-  `include_bytes_aligned!`. `cargo xtask build` / `cargo xtask run` are the canonical entrypoints.
-- [~] **CO-RE/BTF:** `cargo xtask codegen` mechanism + `mod vmlinux;` wiring in place (relies on
-  `/sys/kernel/btf/vmlinux`; one portable object via load-time relocation; never hand-roll structs).
-  Run `cargo xtask codegen` (needs `bpftool` + `aya-tool`) to populate `crates/ebpf/src/vmlinux.rs`
-  with `task_struct`; M1 is the first consumer. → [ADR-0002](docs/adr/0002-co-re-btf-over-compile-per-kernel.md)
-- [x] **Decision: ring buffer over perf buffer** (`BPF_MAP_TYPE_RINGBUF` — MPSC, lossless, clean
-  reserve/commit). Sets the **min-kernel-5.8** floor. → [ADR-0001](docs/adr/0001-ring-buffer-over-perf-buffer.md)
-- [x] **Boot preflight** (shipped now, relied on everywhere after): probe BTF present, cgroup v2,
-  kernel ≥ 5.8, and read `/sys/kernel/security/lsm`; if `bpf` is absent, `WARN` that LSM enforcement
-  (M6) can't attach and will degrade. → `crates/agent/src/preflight.rs`
-- [x] CI: `cargo build` (default-members) + the eBPF object build, `cargo clippy -- -D warnings`,
-  `cargo fmt --check`, `cargo deny check`. → `.github/workflows/ci.yml` (plus an on-runner load smoke-test).
-- [~] CI: **eBPF load/verifier smoke-test in a microVM** (`lvh`/qemu, known kernel) — catches
-  verifier/load regressions the bare GitHub runner can't. → `.github/workflows/ebpf-smoke.yml`
-  (scaffolded over pinned kernels; needs CI iteration to go green).
-- [x] ADR template + [`docs/adr/`](docs/adr/) log; foundational decisions recorded as ADR-0001…0008.
-- [x] Seed the **kernel/platform support matrix** doc. → [`docs/support-matrix.md`](docs/support-matrix.md)
-- [ ] Tag `v0.0.0` (loads + attaches a trivial no-op program, detaches cleanly on `Drop`).
+- [ ] Cargo workspace + the crate split (below). Rename the repo/crates off `agent`.
+- [ ] **Binary dispatch (the DX spine):** `app` is one binary with subcommands — `gui` (default on a
+  desktop) · `top` (live TUI) · `ps` (one-shot, `--json`) · `serve` (M9). On a headless box with no
+  display, bare invocation falls back to `top` with a hint. Docker/Ollama-style verbs.
+- [ ] **Decision: the frontend stacks** → recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md). **GUI:** `egui` on `wgpu` (immediate-mode suits live
+  telemetry; ships fast; bespoke `wgpu`/GPUI noted for hero visuals later). **TUI:** `ratatui`. Both
+  are pure views of `core`.
+- [ ] **Decision: the GPU data source** → [`ARCHITECTURE.md`](ARCHITECTURE.md) (carries the old hybrid design): **NVML** is the source
+  of truth (`nvml-wrapper`); **DCGM** optional (richer/MIG); a **mock** source so the app builds,
+  tests, and demos **with no GPU present**. Three sources behind one trait.
+- [ ] **Headless-engine split** wired as empty crates: `collector` produces samples, `core` holds the
+  model (incl. the stubbed `Collector` *and* `Sink` traits — the in/out seams), `ui`/`cli` render —
+  with the mock collector already feeding fake data so both the window and the `ps` table show something.
+- [ ] CI: `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo deny check`, and a
+  headless test run (mock collector → CI needs no GPU). `gui` window-open is a manual smoke step; `ps`
+  and `top` are CI-testable headlessly.
+- [ ] Record the foundational decisions in [`ARCHITECTURE.md`](ARCHITECTURE.md) (native binary, headless
+  engine, two frontends, frontend stacks, GPU source) — the *why* that outlives the diff.
+- [ ] Tag `v0.0.0` (`gui` opens + renders steadily; `ps` prints a stub table; both close cleanly).
 
-## M1 — First probe: process execution ⭐
-The end-to-end pipeline for one event type — kernel hook → ring buffer → typed struct in userspace.
-**Demo:** start the agent, run `/bin/ls`, see a decoded `ExecEvent` with the right pid/ppid/uid/comm.
+> **Crate layout (the target):**
+> ```
+> crates/core       the data model: device/process snapshots, ring-buffer time series, the collector + sink traits. The spine.
+> crates/collector  source implementations: nvml, dcgm (optional), inference scraper (M6), mock
+> crates/ui         GUI frontend (lib): wgpu/egui views & widgets — charts, gauges, process table, GPU grid
+> crates/cli        terminal frontend (lib): one-shot `ps`/`--json` + the live `top` TUI (ratatui)
+> crates/export     machine sinks (lib): prometheus, otlp, splunk — wired in M8 (the `Sink` trait lives in core)
+> crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}, config
+> xtask             build/dev orchestration (dev-only, never shipped)
+> ```
 
-- [x] **Define the event ABI in `crates/common`** — `EventHeader` (with in-kernel `ktime_ns`),
-  `EventKind`, and `ExecEvent` (incl. `cgroup_id` **and** `mnt_ns_inum`). Padding-free by
-  construction (u64s first); `const _: () = assert!(size_of::<T>() == …)` guards the layout.
-- [x] **Hook:** **regular** tracepoint `sched/sched_process_exec` — canonical "a process started"
-  signal, post-exec so `comm`/exe are stable. (Chose `#[tracepoint]` over a raw tracepoint:
-  `EbpfContext` gives pid/uid/comm for free and the args are less CO-RE-coupled for no gain on
-  low-frequency exec.)
-- [~] **In-kernel capture:** done — `pid` (tgid), `uid/gid`, `comm`, `cgroup_id`
-  (`bpf_get_current_cgroup_id`), `ktime_ns` (`bpf_ktime_get_ns`), and the exec `filename` (tracepoint
-  `__data_loc`). **Pending Part B (CO-RE):** `ppid` (`task → real_parent → tgid`) and the **mount-ns
-  inode** (`task → nsproxy → mnt_ns → ns.inum`) — needs `cargo xtask codegen` (`bpftool`+`aya-tool`).
-- [x] **Write discipline:** reserve a ring-buffer slot, **zero the whole slot, then write fields in
-  place** — never build on the 512-byte stack and copy. (The verifier rejects any uninitialized,
-  incl. padding, byte reaching `bpf_ringbuf_submit` as *invalid indirect read from stack*.)
-- [x] **Userspace:** consume `aya::maps::RingBuf` async (tokio `AsyncFd`); cast bytes → struct
-  (`bytemuck`); dispatch on `hdr.kind`; handle partial reads + shutdown (detach on `Drop`).
-- [x] **Loader guard:** ring-buffer size is a **power of two and a page multiple** — enforced as a
-  compile-time `const`-assert in `agent_common` (the size is baked into the object, so it's a build-time
-  guard, not a runtime one). *(Moved from M0 — the ring buffer first exists here.)*
-- [ ] Bounded `argv` capture (a few args, truncated) via `bpf_probe_read_user` under `#[unroll]` —
-  every read guarded for the verifier.
-- [~] **Tests:** unit done — the ABI byte round-trip + `EventKind` + preflight parsing. **Pending:**
-  deterministic VM integration test (spawn a known binary → assert one `ExecEvent`) + zero-loss under a
-  tight exec loop (needs root / the `ebpf-smoke.yml` microVM).
+## M1 — First metric — GUI + CLI ⭐
+The end-to-end slice for one number, proving the engine feeds **two** surfaces. **Demo:** `<app> gui`
+shows your GPU's utilization + memory updating live as a sparkline; `<app> ps --json` prints the same
+numbers for a script — both reading the identical `core`.
 
-> **Why `mnt_ns_inum` + `ktime` from M1, not later:** the mount-ns inode is a slower-recycling
-> *secondary* identity key that lets M2 reconcile short-lived pods whose cgroup dir is unlinked
-> before userspace resolves it; the in-kernel timestamp stops late enrichment from distorting event
-> time. `synced`/`PodMeta` are **userspace annotations, not part of this kernel ABI** (see M2).
+- [ ] **`core` model:** `DeviceSample { util, mem_used, mem_total, ts }` and a fixed-capacity
+  **ring-buffer** time series per device (bounded — a monitor never grows unboundedly).
+- [ ] **`collector` (NVML):** poll `nvmlDeviceGetUtilizationRates` + `nvmlDeviceGetMemoryInfo` on a
+  background task (default ~1 Hz); push into `core`. Mock collector emits a synthetic signal so every
+  surface is identical with no GPU.
+- [ ] **GUI:** one panel — a number + a live sparkline bound to the ring buffer; redraw on new data,
+  **idle when nothing changed** (adaptive frame rate, not a busy spin).
+- [ ] **CLI:** `ps` prints a human table of current device state; `ps --json` prints structured JSON
+  (the scripting contract — stable field names, exit codes).
+- [ ] **Decouple cleanly:** GUI and CLI read only `core`; swapping mock↔NVML changes neither frontend.
+- [ ] **Tests:** `core` ring-buffer semantics (bounded, ordered, wraps); the mock collector drives a
+  headless loop and asserts the model advances; `ps --json` output is golden-tested — all without a GPU.
 
-## M2 — Kubernetes enrichment ⭐ (the keystone)
-Turn a kernel `cgroup_id` into **pod / namespace / container / workload** — the join that makes
-everything else valuable, and the genuinely hard userspace engineering. **Demo:**
-`kubectl exec -it <pod> -- sh` → the exec event is labeled with its pod, namespace, container, and
-owning workload.
+## M2 — Single-GPU dashboard
+Turn the one metric into the full real-time picture of one GPU — the first genuinely lovable view.
+**Demo:** a clean, responsive `gui` dashboard for one GPU with live charts and a few minutes of history.
 
-- [ ] ADR: the enrichment join (cgroupfs-path primary, CRI socket fallback) and the cache model.
-- [ ] **`cgroup_id → containerID`:** walk **only `kubepods.slice`** and `statx` **directories only**
-  (the `cgroup_id` *is* the dir inode — never stat leaf files like `cpu.pressure`/`memory.stat`, or a
-  250-pod node spikes the agent's own CPU). Parse the container id from the leaf path
-  (`.../cri-containerd-<id>.scope`, `...docker-<id>.scope`, CRI-O variants).
-- [ ] One-time backfill + `inotify` deltas on a **low-priority background task** that yields between
-  descents. Cache `cgroup_id → containerID`.
-- [ ] **`containerID → PodMeta`:** a **node-scoped** kube-rs reflector/watch
-  (`fieldSelector=spec.nodeName=$NODE_NAME`, from downward-API `NODE_NAME`), indexed by
-  `status.containerStatuses[].containerID`; evict on pod delete.
-- [ ] **Process-tree reconstruction:** stitch exec/fork/exit (the M3 lifecycle events) into per-pod
-  process ancestry so an event carries its parent chain, not just its own pid — the backbone every
-  detection rule and forensic trace leans on. Bounded, lifecycle-evicted.
-- [ ] **RBAC (the CKS/RBAC exercise):** a ServiceAccount with `get/list/watch` on `pods` (and
-  `nodes`) only — no cluster-wide write.
-- [ ] **Cold-start & re-sync** (the architectural invariant — see [`.rules`](./.rules)): attach probes
-  first, seed the baseline from `/proc`, node-scope the List for a sub-second sync, and park
-  cache-miss events in a bounded short-deadline resync queue keyed on `(cgroup_id, mnt_ns_inum)`;
-  emit enriched or explicit `Unknown`, **never drop, never block the ring-buffer drain**.
-- [ ] Mark every event with a `synced` bit (`cold_start` vs `steady`); readiness probe stays
-  `NotReady` until the `/proc` backfill + initial List complete.
-- [ ] **Tests:** `kind` cluster, deploy a pod, `kubectl exec`, assert correct pod/ns/container.
-  Cover **both containerd and CRI-O** cgroup formats and **systemd vs cgroupfs** drivers. Cache
-  correct across pod churn; bounded growth (LRU + lifecycle eviction).
+- [ ] Extend `DeviceSample` to the full set: utilization, memory, **temperature, power, clocks (SM/mem),
+  SM occupancy, PCIe throughput, fan**. (NVML covers all of these — and `ps`/`--json` get them for free.)
+- [ ] **Charts that feel good:** smooth live line charts + a rolling few-minutes window; gauges for
+  instantaneous values; tasteful layout and typography (the GUI craft pass).
+- [ ] Handle the GPU being absent/asleep gracefully (no panic; a clear "no signal" state).
+- [ ] **Self-overhead panel:** show the app's *own* CPU/GPU/RAM — keystone-6 honesty and a forcing
+  function to stay light.
+- [ ] **Tests:** sample → model → renderable-state transforms (golden snapshots of the view model);
+  history bounds; degraded-device state.
 
-> **Dragon — short-lived-pod ghosting:** a 45 ms `cronjob` execs and exits; its cgroup dir is
-> unlinked before the `cgroup_id → path` lookup runs, resolving to nothing. The slower-recycling
-> `mnt_ns_inum` (captured in M1) is the secondary key that reconciles the dead workload.
+> **Note on surface:** M2's metrics land in `core`, so `ps`/`ps --json` gain them immediately; only the
+> *rich GUI dashboard* is GUI-specific. The TUI brings the same metrics to the terminal in M3.
 
-## M3 — Full syscall surface: network, file, identity
-Broaden signal from one event type to the surface a security platform needs — egress, file access,
-credential changes, and process lifecycle — reusing the M1 envelope and M2 enrichment. **Demo:**
-`curl` from a pod → enriched `ConnectEvent`; `cat /etc/shadow` → enriched `FileEvent`; `sudo` →
-`CredEvent`; a forking workload → a correct process tree.
+## M3 — Live TUI — `top` ⭐
+The second first-class frontend: a beautiful live terminal dashboard for servers, SSH, and people who
+live in the terminal. **Demo:** `ssh gpubox; <app> top` → a real-time `ratatui` view of the GPU,
+updating in place — the same `core` the GUI uses, no window required.
 
-- [ ] **Network egress:** `kprobe`/`fexit` on `tcp_v4_connect`/`tcp_v6_connect`, reading
-  `saddr/daddr/sport/dport/family` from `struct sock` via CO-RE. (Choose `cgroup/connect4|6`
-  `BPF_PROG_TYPE_CGROUP_SOCK_ADDR` where it fits — **reused for enforcement in M6**, since it denies.)
-- [ ] **DNS visibility:** parse DNS query/response (tracepoint or socket filter) so egress reads as
-  names, not just IPs — the join most "unexpected egress" rules actually need.
-- [ ] **File access:** `fentry`/tracepoint on `do_sys_openat2`/`sys_enter_openat`; bounded path, flags,
-  result. **Filter in-kernel** — opens are high-volume — via an `LPM_TRIE`/`HASH` of sensitive path
-  prefixes (and/or sampling) so userspace never sees the firehose.
-- [ ] **Identity & lifecycle:** `setuid`/`setgid`/capability changes (`CredEvent`) and `fork`/`exit`
-  (feeding M2's process tree) — the events that turn raw execs into an attributable session.
-- [ ] Add `ConnectEvent`/`FileEvent`/`CredEvent`/`ExitEvent` to `common` sharing `EventHeader`; one
-  ring buffer, demux by `kind`. Additive ABI only. No new pipeline.
-- [ ] **Cost control:** per-cgroup token-bucket rate limiting in a BPF map; configurable ringbuf size;
-  measure overhead under load against the budget.
-- [ ] **Tests:** VM/kind integration for IPv4 + IPv6 connect, DNS, sensitive-path open, and cred
-  change, each enriched; zero ringbuf loss under a file-open storm with in-kernel filtering on.
+- [ ] **`ratatui` TUI:** a live full-screen terminal view — util/mem/temp/power gauges + sparklines,
+  refreshing in place; keyboard quit/scroll; resizes cleanly.
+- [ ] **Same model, different renderer:** the TUI reads `core` exactly like the GUI — proving the
+  pure-view keystone. No metric is GUI-only.
+- [ ] **Terminal-grade craft:** works over SSH, in tmux, on a 256-color or truecolor terminal; sane
+  fallback on a dumb terminal; low redraw cost (don't spin the remote CPU).
+- [ ] **Tests:** TUI view-model from mock samples (assert the rendered buffer/grid headlessly via
+  `ratatui`'s test backend); resize + no-GPU states.
 
-## M4 — GPU / AI telemetry ⭐ (the differentiator)
-Per-pod GPU and inference signal generic kernel tools cannot produce — the wedge. **Demo:** per
-inference pod, GPU util %, memory, SM occupancy, CUDA launch attribution, and (where exposed)
-tokens/sec, queue depth, KV-cache — all joined to pod identity via M2.
+> **Why the TUI early (M3, not late):** headless GPU boxes and SSH are *the* place people need a
+> monitor and *can't* run a GUI. Establishing the TUI now makes "both surfaces" a real discipline for
+> every later metric, instead of a GUI-first app with a bolted-on CLI.
 
-- [x] ADR: the hybrid GPU collector interface → [ADR-0008](docs/adr/0008-gpu-telemetry-hybrid-collector.md)
-  (DCGM/NVML values + ioctl attribution + mock; three pluggable sources, degrade when one is absent).
-- [ ] **Values (source of truth): NVML/DCGM** via the `nvml-wrapper` crate (model after
-  `dcgm-exporter`). `nvmlDeviceGetComputeRunningProcesses` → per-PID **GPU memory** (per-PID
-  *utilization* via `nvmlDeviceGetProcessUtilizationSamples`/DCGM) → join `PID → cgroup → pod`.
-  Handles util, mem, SM occupancy, MIG.
-- [ ] **Attribution (the eBPF wedge): trace the NVIDIA driver `ioctl` boundary** (`/dev/nvidia*` +
-  `/dev/nvidia-uvm`) for *which pod is on the GPU* — immune to static linking. `libcudart` uprobes
-  stay an opportunistic extra where symbols exist.
-- [ ] **Inference KPIs:** scrape the serving runtime's Prometheus endpoint (**vLLM** exposes
-  tokens/sec, queue depth, KV-cache) rather than fragile uprobes into the framework.
-- [ ] Emit a periodic `GpuStatEvent` per pod (userspace-originated), unified downstream.
-- [ ] **Mock/synthetic collector** so the pipeline + rules (M5) are testable **without GPU hardware**;
-  real-GPU e2e is a documented manual test on a spot GPU node.
-- [ ] NVIDIA first; keep the interface vendor-neutral (AMD/ROCm later — the seam that pays off at M9).
+## M4 — Per-process attribution
+Answer "what's *using* my GPU?" — the question that matters when VRAM is full — in **both** surfaces,
+and the backbone of the M6 model↔GPU join. **Demo:** a sortable process table in the GUI and the TUI,
+and `<app> ps --procs --json` for scripts.
 
-> **Dragon — static `libcudart`:** vLLM/TGI/TensorRT-LLM frequently static-link CUDA into a fat
-> `.so`, so a `cudaLaunchKernel` uprobe has nothing to attach to and silently no-ops. The ioctl
-> boundary is the durable attribution signal; **DCGM/NVML remain authoritative for metric values**
-> (the ioctl ABI drifts across driver versions — version-gate it, treat it as activity, not numbers).
+- [ ] **NVML compute processes:** `nvmlDeviceGetComputeRunningProcesses` /
+  `...GraphicsRunningProcesses` → per-PID **GPU memory**; per-PID **utilization** via
+  `nvmlDeviceGetProcessUtilizationSamples` (or DCGM where available).
+- [ ] Resolve PID → process name / cmdline (read `/proc`); a sortable, filterable table; link each
+  process to the device(s) it's on. **Lands in GUI, TUI, and `ps` together.**
+- [ ] Bounded + cheap: cache PID→name, prune dead PIDs, never stat the whole table per frame.
+- [ ] **Tests:** process-table model from mock; sort/filter; PID lifecycle; `ps --procs --json` golden.
 
-## M5 — Detection engine + policy language
-Turn the event stream into **alerts** via a declarative, hot-reloadable **policy language** — Falco's
-intent, expressed as a real compiled rule language rather than ad-hoc matching. **Demo:** author and
-compile a rule, trigger "shell spawned in an inference pod" and "unexpected egress from a GPU node" →
-structured alerts on the local sink.
+## M5 — Multi-GPU + MIG
+Scale from one GPU to a whole box, in both surfaces. **Demo:** an 8-GPU server (and MIG slices) as a
+GUI grid and a TUI list, each drillable to the full single-GPU view.
 
-- [ ] ADR: the policy language + the stateful-evaluation model + the compilation/versioning story.
-- [ ] **Policy language (the platform jump, not just a matcher):** a YAML/expression surface with a
-  real **lexer → typed AST → validator → compiler** to an evaluation form. Match event kind + fields
-  (`comm`, `exe`, file path glob, dst CIDR/port, DNS name, GPU thresholds) **and pod context** (label
-  selectors, workload kind) with `and/or/not`, severity, and reusable macros/lists. Type-checked at
-  compile time so a bad rule fails to load, never at event time.
-- [ ] **Stateful evaluation:** maintain per-pod state from enrichment + process tree + GPU signal —
-  "shell *in an inference pod*" needs pod labels/serving-image (M2); "*unexpected* egress" needs a
-  baseline allowlist; crypto-miner heuristics combine a GPU-util spike (M4) with mining-port egress.
-- [ ] **Output:** `Alert { rule_id, severity, event, pod, ts, message }` with dedup/throttling; local
-  sinks = structured JSON logs + a Prometheus alert counter (value with zero cloud). Hot-reload via
-  `inotify`, atomic compile-then-swap (never serve a half-applied ruleset).
-- [ ] **Starter ruleset:** shell-in-inference-pod, unexpected-egress, sensitive-file-read,
-  crypto-miner-heuristic, privilege-escalation (from M3 cred events).
-- [ ] **Tests:** golden-fixture `event → expected alert(s)` per rule (incl. stateful cases); the
-  compiler rejects malformed/ill-typed rules on load; hot-reload drops no events; a fuzz target on the
-  rule parser (deepened in M9).
+- [ ] Enumerate all devices; **GUI grid** (tiles → expand to the M2 view) and a **TUI multi-device list**.
+- [ ] **MIG:** detect and represent MIG instances as first-class devices (memory/compute per slice).
+- [ ] Topology/NVLink awareness where NVML exposes it (optional).
+- [ ] Smooth at N=8+ updating live — virtualize/throttle redraws in both frontends.
+- [ ] **Tests:** N-device model; MIG enumeration from mock; grid + TUI view-models under churn.
 
-## M6 — Enforcement (optional)
-Act on detections — kill or block — with strong safety rails. Optional because kernel support varies;
-the agent stays fully useful observe-only. **Demo:** enforce mode kills a flagged exec and fails a
-denied egress; audit mode logs the same decisions without acting.
+## M6 — Inference-workload awareness ⭐ (the differentiator)
+The wedge: tie raw GPU activity to the **AI workload** driving it — and **lead with Ollama**, whose
+users are exactly this tool's audience. **Demo:** with Ollama (or vLLM) running, see its loaded models
++ VRAM split (Ollama) or **tokens/sec, queue depth, KV-cache** (vLLM) in a panel next to the GPU it's
+saturating, in both the GUI and the TUI.
 
-- [ ] ADR: the enforcement model, safety rails, and the portability ladder.
-- [ ] **Kill-on-match (broadest):** `bpf_send_signal(SIGKILL)` from the exec probe (kernel ≥ 5.3),
-  decision from a userspace-updated (or in-kernel fast-path) policy map.
-- [ ] **Egress deny:** flip the M3 `cgroup/connect4|6` hook to deny — **no BPF-LSM required**, works
-  on most managed clusters.
-- [ ] **BPF-LSM deny (where available):** LSM hooks (`bprm_check_security`, `socket_connect`,
-  `file_open`) → `-EPERM`. Requires kernel ≥ 5.7, `CONFIG_BPF_LSM`, and `bpf` in the active LSM list.
-- [ ] **Preflight + degrade loudly** (uses M0's `/sys/kernel/security/lsm` read): if `bpf` is absent,
-  `WARN` and fall back to `bpf_send_signal` + `cgroup/connect`. **`BPF_PROG_TYPE_LSM` programs fail to
-  *attach* (`EINVAL`) when bpf isn't registered — a hard precondition, not a silent skip.**
-- [ ] **Audit-first, fail-open by default:** every policy ships dry-run; enforcement opt-in per rule;
-  an allowlist prevents self-lockout (the agent must never kill itself).
-- [ ] **Tests:** audit logs without acting; enforce verified in a VM per supported backend;
-  self-protection allowlist proven; staged rollout (audit → one namespace → cluster).
+- [ ] **Ollama first (the beachhead):** auto-detect a local Ollama (`:11434`) and read `/api/ps` →
+  loaded models, VRAM, GPU-vs-CPU placement. Zero-config: if Ollama's running, you see it. **This view
+  needs only light attribution** (Ollama reports the model's device directly), so it can land even
+  ahead of the full M4 process join.
+- [ ] **vLLM / Triton / TGI:** scrape the Prometheus endpoint → tokens/sec, queue depth, KV-cache %,
+  running/waiting requests, batch size. (Scraping beats fragile uprobes; the runtimes expose this.)
+- [ ] **Join model ↔ GPU (the general case):** correlate the serving process (M4) with its device(s)
+  (M5) → a "model card" showing both inference KPIs *and* the GPU telemetry it's responsible for — in
+  GUI and TUI. **Depends on M4** for runtimes that don't self-report their device.
+- [ ] **Config + discovery:** auto-discover common ports; let users register endpoints; a mock
+  inference source so M6 is demoable with no real server.
+- [ ] **The signature view:** the per-model panel — tokens/sec, KV-cache, queue depth, next to GPU
+  util/mem/power for the same device. This is the screenshot the project is *for*.
+- [ ] **Tests:** Ollama `/api/ps` + Prometheus-text parsing (golden fixtures); the model↔GPU join;
+  inference view-model from mock (GUI + TUI).
 
-> **Dragon — LSM stacking:** on hardened distros (Flatcar / Ubuntu Pro / RHEL) with AppArmor/SELinux
-> primary, LSM runs every registered module per hook and short-circuits only on a *deny* — an
-> upstream *allow* still reaches our hook, but if `bpf` isn't in the boot `lsm=` list we can't attach
-> at all. Preflight, then degrade.
+> **Dragon — opaque/heterogeneous runtimes:** you can't reliably uprobe the framework, and metric
+> names differ (Ollama's REST `/api/ps` vs vLLM's Prometheus). Lean on each runtime's **published
+> interface**, normalize into one model, and degrade gracefully — show what's there, label what isn't.
 
-## M7 — Exporter + packaging (OSS → fleet product)
-Ship events/alerts to `agent-cloud` over a stable contract and make the agent trivially deployable —
-while staying **offline-first**. **Demo:** `helm install` → DaemonSet on every node (incl. GPU);
-events stream over mTLS; killing the endpoint doesn't disrupt local operation.
+## M7 — History, alerts & scripting
+Make it a tool you *leave running* and *automate against*. **Demo:** overnight, a persisted history
+chart and a notification that GPU 3 went idle at 02:14; and `<app> ps --json --watch | jq` streams live
+metrics to a script.
 
-- [ ] ADR: the exporter contract (proto schema) and the packaging/security posture.
-- [ ] **Exporter (`crates/exporter`):** `tonic` gRPC client streaming `Event`/`Alert`/`GpuStat`. The
-  **proto schema lives in `common`/`proto`** — the open-core contract `agent-cloud` imports. Optional
-  OTLP sink for teams already on an OpenTelemetry collector.
-- [ ] Batching, backpressure, **mTLS + auth token**, retry/backoff, at-least-once with a bounded local
-  buffer (optional disk spool). Strictly optional — disabled, the agent is fully functional.
-- [ ] **Local-first sinks:** Prometheus `/metrics` (self-metrics + event/alert counters) + structured
-  JSON logs — full value with zero cloud.
-- [ ] **Packaging:** multi-stage image (needs `CAP_BPF`/`CAP_PERFMON`/`CAP_SYS_ADMIN`/`CAP_SYS_RESOURCE`,
-  `hostPID`, host mounts for `/sys/fs/cgroup`, `/sys/kernel/btf`, the CRI socket). **DaemonSet + Helm +
-  Kustomize**: least-privilege ClusterRole (`get/list/watch` pods/nodes), named capabilities over
-  blanket `privileged`, tolerations for **all** nodes incl. GPU, priorityClass, limits, health/ready
-  probes.
-- [ ] **Docs:** install, configure, write-a-rule, architecture, the security model, the kernel
-  requirements matrix.
-- [ ] **Tests:** stream to a stub cloud over mTLS; endpoint death → buffer + reconnect, no local
-  disruption; RBAC least-privilege verified by removing perms and seeing graceful degradation.
-- [ ] CI check: `agent` never depends on `agent-cloud`.
-- [ ] Tag `v0.7.0`.
+- [ ] **Persisted history:** spill ring buffers to a small on-disk store (embedded TS / SQLite) so
+  history survives restarts; scrub back over hours in GUI and TUI.
+- [ ] **Alerts:** user-set thresholds (idle > N min, temp, power, mem nearing OOM, tokens/sec dropping)
+  → native desktop notifications **and** CLI exit codes / stderr (so `cron`/scripts can act on them).
+- [ ] **Scriptable CLI:** `ps --json` (one-shot) and `--watch` (a stream of JSON lines) — a stable,
+  documented contract for piping into `jq`, dashboards, or alerting. (This is the lowest-common-
+  denominator export; the structured Prometheus/OTLP sinks land in M8.)
+- [ ] **GUI craft pass:** keyboard-driven nav, command palette, themes, arrangeable layouts, remembered
+  window state — the Zed/Ghostty feel milestone.
+- [ ] **Tests:** persistence round-trip + retention bounds; alert-rule evaluation (golden); `--watch`
+  stream format; no-loss when backgrounded.
 
-## M8 — Fleet control & multi-tenancy
-The platform jump on the agent side: make a single agent **fleet-manageable** — pull signed policy,
-report health, accept a fixed, audited verb set from the control plane — without ever giving up
-offline-first operation or the one-way dependency. **Demo:** push a signed policy bundle from a stub
-control plane; it rolls out audit → canary → fleet; a second tenant's rules never touch the first;
-kill the plane and the agent keeps enforcing the last-known-good bundle.
+## M8 — Exporters & observability integrations
+Plug the monitor into the stack you already run — **integrate, don't reimplement.** **Demo:** point
+Prometheus at the monitor's `/metrics` and graph GPU + inference metrics in your *existing* Grafana; or
+ship them to Splunk/Datadog via OTLP — without the monitor ever becoming a dashboard or a database.
 
-- [ ] ADR: the fleet control channel (bidirectional gRPC over the M7 mTLS link) and the
-  policy-bundle distribution + versioning model.
-- [ ] **Signed policy bundles:** rules + allowlists + GPU baselines packaged as **content-addressed,
-  cosign-signed OCI artifacts**; the agent pulls/receives, **verifies signature + digest before load**,
-  compiles (M5), and hot-swaps atomically — rolling back on compile or health regression.
-- [ ] **Fleet identity & enrollment:** per-node identity (SPIFFE/X.509 SVID), enrollment +
-  attestation, so the plane authenticates each agent and an agent only accepts policy for its tenant.
-- [ ] **Bidirectional control channel:** the plane can push config/policy and request a **fixed verb
-  set** (snapshot, profile, drain, re-sync) — capability-gated and fully audited. **Never a
-  remote-code path:** only declarative policy + that closed verb set, so the blast radius of a
-  compromised plane is bounded.
-- [ ] **Multi-tenancy:** per-tenant rule namespaces, quotas, and event routing with hard isolation;
-  one tenant can neither see nor perturb another's policy or signal.
-- [ ] **Staged rollout & canary:** a bundle version rolls out audit → a canary node set → namespace →
-  fleet, with **automatic rollback** on error-rate or agent-health regression.
-- [ ] **Offline-first preserved (the invariant under stress):** unreachable plane ⇒ keep running on
-  the stale-but-valid last-known-good bundle; reconcile on reconnect. Zero cloud is still a valid mode.
-- [ ] **Tests:** bundle signature/digest verify + rollback; tenant isolation (no cross-tenant leak);
-  control-channel authz on every verb; split-brain convergence; offline survival + reconcile.
+- [ ] **The `Sink` trait (in `core`):** the mirror of `Collector` — a machine-facing pure view that
+  reads the model and publishes it downstream. Like the frontends, a sink never touches a data source.
+  (Stubbed in M0; implemented here.)
+- [ ] **Prometheus `/metrics` (the anchor):** an HTTP exposition endpoint rendering `core` in Prometheus
+  text format — per-device util/mem/temp/power + per-model inference KPIs, labeled by device/model/host.
+  A drop-in for `dcgm-exporter`, but with a GUI. **M8 introduces a small embedded HTTP server** that
+  runs alongside any mode (GUI open *and* `/metrics` live at once); M9's `serve` later reuses it.
+- [ ] **OTLP exporter (the universal pipe):** push metrics over OpenTelemetry — one integration reaches
+  **Grafana, Splunk, Datadog, Honeycomb, and any OTel collector**. Optional native **Splunk HEC** sink.
+- [ ] **Composable + opt-in:** sinks run *alongside* the frontends and are strictly optional — with
+  none configured the tool is fully useful. A sink failure (unreachable endpoint, encode error)
+  degrades quietly and never disrupts a frontend.
+- [ ] **Tests:** Prometheus exposition format (golden), OTLP payload shape, the `Sink` contract from the
+  mock source; a failing sink doesn't break the engine or the frontends.
 
-> **Dragon — split-brain policy:** a flapping channel or two sources deliver conflicting bundle
-> versions; the agent must converge **deterministically** (monotonic version + content digest, prefer
-> last-known-good) and **never oscillate enforcement** — flicker between allow/deny is worse than a
-> stale-but-stable decision.
+> **Boundary — integrate, don't reimplement:** we *expose* data; Prometheus/Grafana/Splunk do storage,
+> dashboards, and alerting. This is the **anti-platform** move — plug into theirs, don't build ours. If
+> a feature starts to look like a time-series database or a dashboard, it's on the wrong side of the line.
 
-## M9 — Hardening, scale & performance
-Make it production-grade at fleet scale across the whole support matrix — the difference between "it
-runs" and "it runs on every node we have, forever, without becoming the problem." **Demo:** the
-kernel + arch matrix is green in CI; the perf budget holds on a 250-pod node under a syscall storm; a
-24h soak shows no leaks; chaos (plane death, GPU driver reload, kernel pressure) degrades gracefully.
+## M9 — Remote & multi-host
+Watch machines that aren't your laptop, from either frontend. **Demo:** one GUI/TUI aggregating several
+remote hosts. **Local-first stays intact** — remote is opt-in.
 
-- [ ] ADR: the performance budget, the load-shedding model, and the supply-chain posture.
-- [ ] **Perf budget enforced in CI:** a benchmark harness with a repeatable workload; a regression
-  gate on CPU / memory / per-event latency; **published numbers** in the support matrix.
-- [ ] **Load shedding & adaptive sampling:** under pressure, per-cgroup rate limits + adaptive
-  sampling degrade gracefully and **never block the drain or the kernel** — bounded everything.
-- [ ] **Kernel + arch matrix green:** the `ebpf-smoke` microVM matrix across pinned kernels
-  (5.8 … latest) **and `aarch64` (arm64) in addition to `x86_64`**; gaps documented, not hidden.
-- [ ] **Multi-distro validation:** GKE/EKS/AKS + bare metal + hardened distros
-  (Flatcar/Bottlerocket/RHEL); LSM-stacking handled; second GPU vendor (AMD/ROCm) seam exercised.
-- [ ] **Fuzzing & property tests:** fuzz the event decoders, the rule compiler, and the cgroup/path
-  parsers; property tests on the ABI round-trip and enrichment cache invariants.
-- [ ] **Chaos & soak:** a multi-hour soak proving bounded caches (no leaks); chaos suites (kill the
-  plane, reload the GPU driver mid-stream, apply memory/CPU pressure) with graceful degradation.
-- [ ] **Supply chain:** reproducible builds, signed images + SBOM (cosign/syft), pinned deps,
-  `cargo deny` and advisory gates green; self-protection (watchdog, can't be starved into a blind spot).
-- [ ] **Tests:** the matrix is the test — every row above is a CI lane or a documented manual gate.
+- [ ] **`serve` — the thin headless collector:** the same binary in a headless mode (`<app> serve`)
+  reuses `collector` + `core` to sample a host and serve snapshots (small gRPC / stream) — minimal
+  footprint, the Ollama-style invisible daemon. Built on the **M8 HTTP server**, now also streaming
+  snapshots, not just `/metrics`.
+- [ ] **Aggregate in both frontends:** add remote hosts by address; the GUI and TUI render local +
+  remote devices uniformly (the headless-engine split pays off — frontends don't care where samples
+  originate). Model the world as **hosts → devices**, with localhost as host #1.
+- [ ] **Secure + resilient:** authenticated transport; a dead host degrades to a clear "offline" tile,
+  never hangs a frontend; auto-reconnect.
+- [ ] **Tests:** `serve` returns correct snapshots; multi-host model merge; host-down/reconnect.
 
-> **Dragon — the observer that became the bottleneck:** at 250 pods × a high syscall rate, naive
-> enrichment or an unbounded cache makes the agent the noisy neighbor it exists to watch. Bound
-> everything; measure against the **worst case**, not the average; shed load before you block.
+> **Note:** "watch *my handful of machines* from one screen" — a desktop app talking to thin
+> collectors *you* run on your own hosts. Local-first: the data stays on your machines.
 
-## M10 — Platform GA (v0.10.0) ⭐
-Consolidate everything into a stable, extensible, documented platform release — the goal line.
-**Demo (the whole thing, end to end):** fresh multi-node cluster → `helm install` → fleet-managed
-agents → a GPU inference workload → push a signed policy bundle → drop a shell in the inference pod →
-caught, attributed to the model/pod, enforced, and streamed to the (stub) control plane.
+## M10 — 1.0 — packaging & release ⭐
+Ship it like a real product. **Demo:** a new user installs via their package manager (or one file) and
+it runs — local GPUs visible in seconds, in the window *or* the terminal *or* their Grafana.
 
-- [ ] ADR: the **v1 ABI/proto stability guarantee** and the plugin/extension interface.
-- [ ] **Stable contract:** freeze `EventHeader` + the event ABI + the exporter proto as **v1**
-  (additive-only thereafter); a **conformance suite** asserts a build honors the contract.
-- [ ] **Plugin / extension SDK:** a documented boundary (trait-based and/or WASM) for third-party
-  sinks, collectors, and rule functions — the platform extends **without forking core**.
-- [ ] **Conformance & certification suite:** a runnable suite a deployment passes to claim
-  "agent-compatible" — kernel features, enrichment correctness, rule semantics, enforcement safety.
-- [ ] **Full docs site:** install, operate, write-a-rule, write-a-plugin, architecture, security
-  model, support matrix, published performance numbers, and the upgrade/compatibility policy.
-- [ ] **Release engineering:** SemVer + deprecation policy, a stated support window, migration guides;
-  the path from `v0.10.0` toward a future `1.0` SemVer commitment is written down.
-- [ ] **Tests:** the conformance suite green on the full kernel/arch/distro matrix; the end-to-end
-  platform demo automated in `kind` + a manual GPU-node run.
-- [ ] Tag `v0.10.0` — **the platform release.**
+- [ ] **Packaging:** Linux first — AppImage / Flatpak / `.deb`; Homebrew + a `.dmg` for macOS if the
+  NVML/Metal story allows; document the matrix honestly (NVIDIA/Linux is first-class).
+- [ ] **Stable seams frozen:** the `collector` *and* `sink` traits are stable enough that a new GPU
+  vendor (**AMD/ROCm**, **Intel**) or a new exporter is a drop-in, no `core`/`ui`/`cli` change.
+  (Implementations can be post-1.0.)
+- [ ] **Signed, reproducible releases** + checksums; a CI release pipeline; SBOM.
+- [ ] **Docs site:** install, a GUI screenshot tour + a TUI asciinema, the `ps --json` + `/metrics`
+  reference, configuring inference endpoints, remote setup, the support matrix, the contribution guide.
+- [ ] **Tests:** the full headless suite green across supported targets; a smoke install test.
+- [ ] Tag `v1.0.0`.
 
 ---
 
 ## Cross-cutting standards (apply to every milestone)
 
-**Kernel & platform support matrix** — maintained in [`docs/support-matrix.md`](docs/support-matrix.md)
-(enforced at startup by the boot preflight), test against:
-- Min kernel **5.8** (ring buffer); BPF-LSM (M6) needs **5.7+** with `CONFIG_BPF_LSM` and `bpf` in the
-  active LSM list (`lsm=...,bpf`) — preflighted via `/sys/kernel/security/lsm`. Requires CO-RE/BTF
-  (`CONFIG_DEBUG_INFO_BTF`) and **cgroup v2**.
-- Validate on GKE/EKS/AKS + at least one bare-metal kernel; **`x86_64` and `arm64`** (M9); document
-  where BTF or BPF-LSM is absent.
+**Frontend parity & DX (the GUI/CLI contract):** one binary, Docker/Ollama-style subcommands (`gui` ·
+`top` · `ps` · `serve`). **Every metric must be reachable in all three human surfaces** — GUI, TUI, and
+`--json` — because they're all pure views of `core`; a GUI-only metric is a design smell. The machine
+sinks (M8) get every metric for the same reason. The CLI is **scriptable, not a toy**: stable JSON
+field names, meaningful exit codes, `--watch` streaming. Adding a metric means updating the model once
+and the thin renderers/sinks, never duplicating logic.
+
+**Platform & vendor support** — maintained in [`ARCHITECTURE.md`](ARCHITECTURE.md) (Platform support):
+- **NVIDIA/NVML, Linux** is the first-class target. DCGM is an optional richer source (and the MIG
+  path). macOS/Windows and AMD/Intel are post-1.0 behind the collector trait — documented, not faked.
+- The **mock collector** is a permanent first-class source: every surface must build, test, run, and
+  *demo* with **no GPU and no driver present**.
 
 **Testing ladder:**
-- Unit (userspace): enrichment parsers, the rule compiler, decoders — table-driven fixtures.
-- eBPF load/verifier tests in a microVM (`lvh`/qemu) in CI — verifier regressions the runner can't catch.
-- Integration in `kind`: enrichment, end-to-end event → alert, RBAC, fleet bundle rollout.
-- e2e on a real GPU node (manual/spot): M4 numbers + the full signature demo.
-- CI kernel + arch matrix: build + load across kernel versions and `x86_64`/`arm64`.
-- Fuzz + property + soak + chaos (M9): decoders, rule compiler, parsers; bounded-cache and ABI invariants.
+- Unit (headless, no GPU): `core` model + ring buffers, metric parsers (NVML maps, Ollama `/api/ps`,
+  Prometheus text), view-model transforms, alert rules, **sink formats (Prometheus/OTLP)** — table-driven
+  via the mock collector.
+- Snapshot tests of view models (what each surface *would* draw/emit): GUI view models, the TUI render
+  buffer (`ratatui` test backend), `ps --json` golden output, **Prometheus exposition golden** — all
+  without a window.
+- Manual smoke on real hardware (single-GPU, multi-GPU, MIG): GUI + `top` over SSH.
+- Real inference e2e: a local Ollama/vLLM (or recorded output) → assert the inference panel populates.
 
-**Performance & overhead budget:** set a concrete budget (e.g. low single-digit % CPU on a busy
-node) and track it from M3, **gate it in CI from M9**. Levers: in-kernel filtering (M3), per-cgroup
-rate limiting, adaptive sampling, ringbuf sizing, minimal per-event work. Benchmark with a repeatable
-workload; publish numbers in the support matrix.
+**Performance & overhead budget (keystone 6):** the monitor's own footprint is a tracked metric.
+Targets: negligible idle CPU, render-on-change (no busy frame loop, no remote-CPU-spinning TUI),
+throttle/idle when backgrounded, bounded memory regardless of uptime. Benchmark startup + steady-state;
+show our own usage in-app; regressions are bugs.
 
-**Dependency / sequencing graph:**
+**Build/dev graph:**
 ```
-M0 ─▶ M1 ─▶ M2 ─┬─▶ M3 ─▶ M5 ─▶ M6 ─┐
-                └─▶ M4 ─────┘        │
-                                     ▼
-                          M7 ─▶ M8 ─▶ M9 ─▶ M10 (GA / v0.10.0)
+M0 ─▶ M1 ─▶ M2 ─▶ M3 ─▶ M4 ─▶ M5 ─▶ M6 ─▶ M7 ─▶ M8 ─▶ M9 ─▶ M10 (1.0)
+       │      └─ GUI ─┘  └TUI┘    └─ M4 feeds the M6 model↔GPU join ─┘
+       └─ both surfaces established by M3; every metric after lands in GUI + TUI + ps (+ sinks at M8)
 ```
-M2 is the keystone — it unblocks every downstream signal. M3 and M4 are independent after M2 and
-parallelizable; M5 needs M3+M4 signal; M6 builds on M3/M5. M7 (exporter contract) firms up with
-M5/M6 and unblocks M8 (fleet, which speaks that contract). **M9 (hardening/scale) runs continuously
-from M3 onward but is the hard gate before M10 GA.**
+Mostly linear, with two real dependencies: **M6 (inference) needs M4 (process attribution)** for the
+general model↔GPU join, and **M8 (exporters) + M9 (remote)** share the same `serve` HTTP server (do M8
+first; M9 reuses it). M6 is the differentiator — get to it as early as M4 allows.
 
-### Scale & LOC budget (the `0.10.0` target)
-`v0.10.0` is the platform release, budgeted at **~100k lines of authored Rust** (generated `vmlinux`
-+ vendored protos excluded; ~30% is tests). The rough allocation — the *shape* of the system, not a
-quota:
-
-| Area | ~kLOC | What it is |
-|------|-------|------------|
-| eBPF programs (`crates/ebpf`) | ~10 | full syscall surface + GPU ioctl + LSM hooks, CO-RE across kernels |
-| `common` ABI + proto | ~3 | the kernel⇄userspace⇄cloud contract |
-| enrich (`crates/enrich`) | ~12 | cgroup→container→pod, process-tree reconstruction, identity, cache |
-| rules / detection (`crates/rules`) | ~12 | the policy language (lexer→AST→compiler), stateful eval, rulesets |
-| enforcement | ~8 | LSM/signal/egress backends, safety rails, the portability ladder |
-| GPU/AI telemetry | ~10 | NVML/DCGM, ioctl attribution, inference KPIs, MIG, vendor seam |
-| exporter + local sinks | ~6 | gRPC/OTLP, batching/backpressure, disk spool, `/metrics` |
-| fleet / control (`crates/fleet`) | ~8 | signed bundles, identity, multi-tenancy, staged rollout |
-| packaging / operability / config / self-protection | ~6 | Helm/DaemonSet, config model, watchdog, health |
-| tests (VM matrix, kind e2e, golden, fuzz, soak) | ~25 | proportional to running-in-the-kernel risk |
-| **Total** | **~100** | the platform at `v0.10.0` |
-
-This is a **multi-year, multi-engineer scope**. The honest unit of progress is the **milestone tag +
-demo + green CI**, not the line count — the LOC budget exists to size ambition and catch scope drift,
-and **we never pad code to hit it**. If a milestone lands its demo in far fewer lines, that's a win,
-not a miss; if it balloons past its row, that's a signal to split it.
+### Scope & where the lines go (an estimate, not a target)
+A focused native app with two frontends and machine exporters — realistically **~25–50k lines of Rust**
+at 1.0, depending mostly on how bespoke the GUI gets (`egui` low end; custom `wgpu` higher) and whether
+remote (M9) is in. Rough shape: `core` small and central; `collector` moderate (NVML + DCGM + inference
++ mock); `ui` (GUI) the largest single piece; `cli` (TUI + one-shot) moderate; `export` thin (sinks are
+pure views); tests ~30%. **The number is an estimate to size the work, never a goal** — the unit of
+progress is the milestone tag + demo + green CI, and a smaller line count is a win. (The CLI/TUI and the
+sinks all add little *because* they reuse `core` — that's the headless-engine dividend.)
 
 ---
 
 ## Architectural invariants (never traded away)
 
-> Each invariant traces to a decision record in [`docs/adr/`](docs/adr/) (ADR-0001…0008).
-
-- **The kernel is the source of truth; `common` is the contract.** Every `#[repr(C)]` event + the
-  exporter proto is ABI: additive changes only, `EventHeader.version` + proto field numbers carry
-  compatibility, never reorder/resize existing fields. Types are **padding-free and `const`-asserted**;
-  `ktime_ns`/`cgroup_id`/`mnt_ns_inum` are captured in-kernel. `synced`/`PodMeta` are userspace
-  annotations, not kernel ABI. The crate stays `no_std` and dependency-light. **Frozen as v1 at M10.**
-- **The verifier is the gate.** Correctness before performance. Zero the reserved ring-buffer slot
-  before writing; keep events padding-free; bound every loop and `bpf_probe_read`. A program that
-  doesn't load doesn't ship.
-- **Capture is never gated on enrichment (cold-start contract).** Attach probes first (no blind
-  window), seed the baseline from `/proc`, node-scope the kube List, park cache-misses in a bounded
-  resync queue that emits `Unknown` rather than dropping, flag every event `synced`. Detail in
-  [`.rules`](./.rules).
-- **One self-contained binary, no sidecars.** eBPF embedded via aya; shipped as a single DaemonSet
-  binary; `xtask` is dev-only. Minimal blast radius and attack surface.
-- **One-way dependency: cloud → OSS, and offline-first.** This repo never imports `agent-cloud`; the
-  agent is fully usable self-hosted with zero cloud. Fleet management (M8) is a *fixed, audited verb
-  set + signed declarative policy* — **never a remote-code path** — and a stale last-known-good bundle
-  keeps the agent fully operational when the plane is gone. CI enforces the no-import rule.
-- **Every feature points at AI/GPU workloads** — the wedge generic tools miss is the only durable edge.
-- **Privileged but self-protecting:** least-privilege RBAC, named capabilities over `privileged`,
-  pinned/signed supply chain (M9); the agent must never disable, starve, or kill itself, and bounds
-  every cache so it can't become the bottleneck it watches for.
-- **SemVer + a git tag per milestone**; the agent exports its own health/event/drop counters via
-  `/metrics` and readiness probes (from M7; informally earlier). `0.10.0` is the platform goal line;
-  the route to a `1.0` SemVer commitment is written down at M10.
+- **Headless engine; every surface is a pure view.** GUI, TUI, one-shot CLI, and machine sinks all read
+  only `core` — none calls NVML/DCGM/Ollama/Prometheus directly. This keeps the app testable headless,
+  demoable without a GPU, scriptable, exportable, and remote-capable. A surface reaching into a data
+  source means the design has broken.
+- **Two first-class frontends, one binary.** A native GUI *and* a CLI/TUI, shipped together, at parity —
+  every metric in all surfaces. The CLI is real (stable `--json`, exit codes, `--watch`), not a toy.
+- **Native, no Electron, single binary.** GUI via `wgpu`, TUI via `ratatui`, fast cold start, statically
+  linkable where the driver allows. The craft bar is the reason to build this over a web app.
+- **Integrate, don't reimplement (sinks are pure views).** Exporters — Prometheus, OTLP, Splunk (M8) —
+  are machine-facing views of `core`, opt-in and composable with the frontends; the monitor never
+  stores, dashboards, or alerts on its own behalf. Plug into the user's stack; don't rebuild it.
+- **Local-first, zero-config.** Launch → local GPUs (and any running Ollama/vLLM) visible, no
+  server/account/config required. Exporters (M8), remote (M9), and persistence (M7) are additive;
+  disabling them leaves a fully useful tool.
+- **A monitor must never be a hog.** Sample sanely, render on change, idle when backgrounded, bound
+  every buffer, surface our own footprint. The tool that watches usage cannot cause it.
+- **Inference awareness is the wedge** — model attribution and serving KPIs (Ollama-first) are why this
+  exists; raw hardware counters alone are commodity.
+- **Vendor-neutral behind a trait.** NVIDIA/NVML first, but `core`/`ui`/`cli` never assume NVIDIA — a
+  new GPU vendor is a new `collector` implementation, nothing else.
+- **The mock collector is permanent.** Every build/test/demo path works with no GPU present.
+- **SemVer + a git tag per milestone**; releases are signed and reproducible (from M10; informally earlier).

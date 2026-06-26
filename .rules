@@ -1,88 +1,97 @@
-# .rules — `agent` (OSS)
+# .rules — GPU & inference monitor (OSS)
 
 > **Single source of truth for this repo — read this first.** Humans and AI assistants (Claude,
 > Gemini, Codex, …) follow it; `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` all point here. Keep it
-> **concise and current**: the *plan* lives in [`ROADMAP.md`](./ROADMAP.md), the *why* in the
-> [ADRs](./docs/adr/), the *how-to* in [`CONTRIBUTING.md`](./CONTRIBUTING.md). Don't duplicate them here.
+> **concise and current**: the *plan* lives in [`ROADMAP.md`](./ROADMAP.md), the *why* in
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md), the *how-to* in [`CONTRIBUTING.md`](./CONTRIBUTING.md). Don't duplicate them here.
 
 ## What this repo is
-The **open-source, Apache-2.0** eBPF node agent that observes and secures Kubernetes workloads,
-purpose-built to understand **GPU/AI inference** workloads. Open-core pair with the private
-`agent-cloud` control plane. Ships as a single-binary **DaemonSet**.
+An **open-source, Apache-2.0**, native **GPU & AI-inference monitor** written in **Rust** — a single
+binary with **two first-class frontends**: a GPU-accelerated **GUI** *and* a terminal **CLI/TUI**. In
+the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, **no Electron**.
+NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
+is still named `agent`; the rename is a pre-M1 task).
+
+> **Status:** the **M0 scaffold is in place** — the workspace builds, `cargo run -p gpumon -- ps`
+> shows the mock source, and `gui`/`top` point at their milestones (M1/M3). The crates
+> (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at M1. The repo is still
+> named `agent` pending the rename.
 
 ## Commands
 | Task | Command |
 |------|---------|
-| Build (cross-compiles + embeds the eBPF object) | `cargo xtask build` |
-| Run the agent (loads eBPF — needs root) | `cargo xtask run -- --once` |
-| Full local check gate before pushing (no root) | `cargo xtask ci` |
-| Test (host, no privilege) | `cargo test` |
+| Build | `cargo build` |
+| Run the GUI (default) | `cargo run -p gpumon -- gui` |
+| Run the live TUI | `cargo run -p gpumon -- top` |
+| One-shot snapshot (scriptable) | `cargo run -p gpumon -- ps` · `… -- ps --json` |
+| Run with **no GPU** (mock source) | append `--mock` (or `GPUMON_SOURCE=mock`) |
+| Full local gate before pushing | `cargo xtask ci` (build + clippy + fmt + test + deny) |
+| Test (headless, no GPU needed) | `cargo test` |
 | Lint — must be clean | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` |
 | Supply chain | `cargo deny check` |
-| Regenerate kernel bindings | `cargo xtask codegen` (needs `bpftool` + `aya-tool`) |
 
-- **Do NOT `cargo build --workspace` / `--all`.** The `ebpf` crate is excluded from `default-members`
-  and only builds for the BPF target (via `build.rs`/`xtask`) — a host build of it fails. Use a bare
-  `cargo build` / `cargo clippy` (default-members) or `-p <crate>`.
-- Loading eBPF needs `CAP_BPF`/`CAP_PERFMON`; `xtask run` uses `sudo`. Full setup + the test tiers:
-  [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+- **Stable Rust, one host target.** No nightly, no cross-compile, no `sudo`, no codegen step — that
+  was the old eBPF project. NVML needs **no root**; the **mock collector** means every command works
+  with no GPU and no driver present.
 
 ## Stack & layout
-- **Rust**; eBPF via **`aya`** (pure Rust — **NOT** Wasmtime, an abandoned idea); k8s via `kube-rs`.
-  Cargo workspace, scaffolded from `aya-template`.
-- Model after: `bpfman/bpfman` (Rust+aya+k8s — closest match), `cilium/tetragon`, `falcosecurity/falco`.
+- **Rust** (stable). **GUI:** `egui` on `wgpu`. **TUI:** `ratatui`. **GPU values:** `nvml-wrapper`
+  (NVML); **DCGM** optional (richer/MIG). **Inference:** Ollama `/api/ps`, vLLM/Triton Prometheus.
+- Model after: `nvtop`/`btop` (the monitor), **Zed**/**Ghostty** (native craft), **Ollama** (DX).
 ```
-crates/common    #[repr(C)] event types — the kernel ⇄ userspace ⇄ cloud contract (no_std). The spine.
-crates/ebpf      eBPF programs (no_std, BPF target): tracepoints/kprobes/LSM
-crates/agent     userspace binary: load eBPF, drain ring buffer, enrich, alert, export
-crates/enrich    k8s enrichment via kube-rs (cgroup → container → pod)   [M2, not yet]
-crates/rules     detection engine                                        [M5, not yet]
-crates/exporter  gRPC/proto export to agent-cloud                        [M7, not yet]
-xtask            build orchestration (dev-only, never shipped)
+crates/core       data model: snapshots, ring-buffer series, the collector + sink traits. The spine.
+crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
+crates/ui         GUI frontend (lib): wgpu/egui — charts, gauges, process table, GPU grid
+crates/cli        terminal frontend (lib): one-shot ps/--json + the live `top` TUI (ratatui)
+crates/export     machine sinks (lib): prometheus, otlp, splunk — wired in M8 (the `Sink` trait is in core)
+crates/app        the single binary: subcommand dispatch (gui/top/ps; serve in M9), wires collector → core → {ui|cli|sinks}
+xtask             build/dev orchestration (dev-only, never shipped)
 ```
 
 ## Invariants — do not trade these away
-The *rule* is here; the *why* is in the linked ADR.
-- **One-way dependency: cloud → OSS.** This repo **NEVER** imports `agent-cloud`; the agent stays
-  fully usable self-hosted with zero cloud. ([ADR-0007](./docs/adr/0007-open-core-one-way-dependency.md))
-- **`common` is the contract.** `#[repr(C)]` events (kernel⇄userspace) + proto (userspace⇄cloud);
-  `no_std`, dependency-light; evolve **additively only** — never reorder/resize existing fields.
-  ([ADR-0005](./docs/adr/0005-event-abi-two-encodings.md))
-- **The verifier is the gate** — correctness before performance; a program that doesn't load doesn't
-  ship. ([ADR-0001](./docs/adr/0001-ring-buffer-over-perf-buffer.md))
-- **Never hand-roll kernel structs** — read them via CO-RE; bindings come from `cargo xtask codegen`.
-  ([ADR-0002](./docs/adr/0002-co-re-btf-over-compile-per-kernel.md))
-- **Capture is never gated on enrichment** (cold-start): attach probes first, seed from `/proc`, emit
-  `Unknown` rather than drop, never block the ring-buffer drain.
-  ([ADR-0006](./docs/adr/0006-cold-start-and-resync-contract.md))
-- **One self-contained binary, no sidecars.** ([ADR-0004](./docs/adr/0004-single-self-contained-binary.md))
-- **Every feature points at AI/GPU workloads** — the wedge, not generic k8s observability.
+The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
+- **Headless engine; every surface is a pure view.** `collector` → `core`; the GUI, TUI, one-shot CLI,
+  and machine sinks **only render `core`** — no surface calls NVML/DCGM/Ollama/Prometheus directly.
+  This is what keeps the app testable headless, demoable without a GPU, scriptable, exportable, and
+  remote-capable.
+- **Two first-class frontends, one binary.** A native GUI *and* a CLI/TUI, at parity — every metric in
+  all surfaces. The CLI is real (stable `--json`, exit codes, `--watch`), not a toy.
+- **Native, no Electron, single binary.** GUI via `wgpu`, TUI via `ratatui`; fast cold start; static
+  where the driver allows. The craft bar is the reason to build this over a web app.
+- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, M8) are machine-facing pure
+  views of `core` — we expose data, never store/dashboard/alert. Plug into the user's stack.
+- **Local-first, zero-config.** Launch → local GPUs (and any running Ollama/vLLM) visible, no
+  server/account/config. Exporters (M8), remote (M9), and persistence (M7) are additive.
+- **A monitor must never be a hog.** Sample sanely, **render on change** (idle when backgrounded),
+  bound every buffer, and surface our own CPU/GPU/RAM. The tool that watches usage cannot cause it.
+- **Inference awareness is the wedge** — Ollama-first model attribution + serving KPIs are why this
+  exists; raw hardware counters are commodity.
+- **Vendor-neutral behind a trait.** NVIDIA/NVML first, but `core`/`ui`/`cli` never assume NVIDIA — a
+  new GPU vendor is a new `collector`, nothing else. The **mock** source is permanent.
 
 ## Code conventions
 - `cargo fmt` + `cargo clippy` clean. **No `unwrap`/`expect`/`panic!` outside tests** (workspace
-  `deny` lints; `clippy.toml` re-allows them in tests). eBPF crate is `no_std`; userspace is stable.
-- **Toolchain split:** the root pins **stable**; `crates/ebpf` pins **nightly** (its own
-  `rust-toolchain.toml`) for the BPF target, and `build.rs` bridges them — don't "simplify" it away.
-  ([ADR-0003](./docs/adr/0003-stable-root-nightly-ebpf-toolchain-split.md))
-- **eBPF event hygiene:** zero the reserved ring-buffer slot, then write fields in place — never build
-  on the stack and copy (the verifier rejects uninitialized/padding bytes). Keep `#[repr(C)]` types
-  padding-free (u64s first) and `const`-assert the size.
-- **Capture identity in-kernel, at event time** (`cgroup_id`, `mnt_ns_inum`, `bpf_ktime_get_ns`) — the
-  only moment it's guaranteed to exist; userspace post-resolution is racy.
-- **Ring-buffer size** must be a power of two **and** a page multiple (else `bpf_map_create` → `-EINVAL`).
-- **Boot preflight:** check BTF, cgroup v2, kernel ≥ 5.8, and `/sys/kernel/security/lsm`; if `bpf` is
-  absent, `WARN` and degrade enforcement to `bpf_send_signal` + `cgroup/connect`.
-- The cgroup crawler scans only `kubepods.slice` and `statx`es **directories only**, on a low-priority
-  task — never leaf files (`cpu.pressure`/`memory.stat`), or a dense node spikes the agent's own CPU.
+  `deny` lints; `clippy.toml` re-allows them in tests). All crates are stable-Rust, `std`.
+- **Frontend parity:** adding a metric means updating the model once and the three thin renderers —
+  never duplicating logic, never a GUI-only metric. A GUI-only metric is a design smell.
+- **Bounded everything:** ring buffers are fixed-capacity; caches (PID→name) are pruned; nothing grows
+  with uptime. Sampling runs on a background task at a sane interval; the UI never blocks on a sample.
+- **Render on change, not on a spin loop:** adaptive frame rate in the GUI; low redraw cost in the TUI
+  (don't spin a remote CPU over SSH).
+- **The CLI is a contract:** `ps --json` has stable field names + exit codes; `--watch` streams JSON
+  lines. Treat it like an API — additive changes only.
+- **Frameworks are decisions:** GUI `egui`/`wgpu`, TUI `ratatui`, GPU `nvml-wrapper` — see
+  [`ARCHITECTURE.md`](./ARCHITECTURE.md); don't swap them casually.
 
 ## Repo etiquette
 - Commits: one logical change each, imperative subject. **Never add AI co-author / attribution
   trailers.** Never commit secrets or fetched/generated data.
-- Work in milestones (`M0`…`M7`); open each with its **ADR** ([`docs/adr/`](./docs/adr/)), close it
-  with a tag + a working demo + green CI. Write a new ADR for any significant, hard-to-reverse call.
+- Work in milestones (`M0`…`M10`, laddering to `v1.0.0`); close each with a tag + a working demo +
+  green CI, and don't start one until the prior is green. Record any significant, hard-to-reverse
+  decision in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
 
 ## Cross-refs
 - The plan & milestones: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.
-- Decision records: [`docs/adr/`](./docs/adr/) · Contributor setup & test tiers: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-- Kernel/platform requirements: [`docs/support-matrix.md`](./docs/support-matrix.md) (enforced by the boot preflight)
-- Product & cloud strategy: `../project/PROJECTS.md` · License: **Apache-2.0**
+- Design, decisions & platform support: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Contributor setup & test tiers: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- Security: [`SECURITY.md`](./SECURITY.md)
+- License: **Apache-2.0** ([`LICENSE`](./LICENSE))

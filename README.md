@@ -1,59 +1,76 @@
-# agent
+# gpumon *(working name)*
 
-Open-source **eBPF node agent** for Kubernetes — observes and secures workloads, purpose-built to
-understand **GPU/AI inference** workloads.
+A native, open-source **GPU & AI-inference monitor** — written in **Rust**, with both a
+GPU-accelerated **GUI** and a terminal **CLI/TUI**. See what your GPUs and inference servers are
+actually doing: in a gorgeous window on your desk, live in your terminal over SSH, as `--json` you
+pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes.
 
-> **Status:** early — **M1 done** (the first probe: `exec` → ring buffer → typed event, verified on a
-> real kernel). The `common` event contract + the `sched_process_exec` probe exist; k8s enrichment
-> (M2) is next. [`ROADMAP.md`](./ROADMAP.md) lays out the staged build toward `v0.10.0` — the platform
-> release.
+> **Status:** early — pivoted from an eBPF agent. The **M0 scaffold is in place** (the workspace
+> builds; `gpumon ps` already shows a mock source); **M1** (real NVML metrics on screen) is next. The
+> plan ladders to `v1.0.0`. The repo is still named `agent` pending a rename.
 
 ## Why
-Generic runtime-security/observability tools (Falco, Tetragon, Pixie) don't understand GPU or
-per-model workloads. `agent` ties kernel-level events to the **pod, namespace, and model** behind
-them — so you can answer questions like *"what just spawned a shell inside an inference pod?"* or
-*"which model is driving egress from this GPU node?"*
+`nvidia-smi` is a CLI snapshot; `nvtop` is a TUI with no history or inference awareness;
+`dcgm-exporter` + Grafana is a server you stand up. None of them is *one fast, native, inference-aware
+tool that's equally good in a window and in a terminal*. Two things set this apart:
 
-**Signature demo (the target):** drop a shell in a GPU inference pod → the agent catches it and
-names the pod, in real time.
+- **Native craft, two ways.** A `wgpu`-rendered GUI *and* a `ratatui` TUI in one single binary —
+  instant startup, buttery real-time, no Electron. It should feel good to leave open.
+- **Inference-workload awareness.** Not just hardware counters — attribute GPU use to the
+  **process → model/server** and surface **tokens/sec, queue depth, KV-cache** from
+  **Ollama / vLLM / Triton**. The part `nvtop` structurally can't do.
 
 ## What it does
-- **eBPF probes** (via `aya`, pure Rust): process `exec`, outbound `connect`, file opens.
-- **k8s enrichment:** map every event to its pod / namespace / workload (cgroup → container → pod).
-- **GPU/AI awareness:** surface GPU utilization and inference signals per pod — the part generic
-  tools miss.
-- **Local rules + alerts:** runs fully self-hosted, **zero cloud required**.
-- **Optional enforcement:** block/kill via LSM-BPF.
+- **GUI** (`gui`): live charts, gauges, a sortable process table, a multi-GPU grid, inference panels.
+- **TUI** (`top`): the same real-time view in your terminal — perfect for headless GPU boxes over SSH.
+- **CLI** (`ps`, `ps --json`): a one-shot, scriptable snapshot of devices and processes.
+- **Per-process attribution**, **multi-GPU + MIG**, **inference KPIs** (Ollama-first), **history +
+  alerts**, and optional **remote/multi-host** monitoring from one screen.
+- **Exporters** (`/metrics`): plug the same data into the stack you already run — **Prometheus**,
+  **OTLP** (Grafana/Datadog/Honeycomb), **Splunk** — without it ever becoming a dashboard or database.
+
+Every surface — GUI, TUI, CLI, and the exporters — is a pure view of one **headless engine**
+(`collector` → `core`), so every metric is available everywhere, and the whole thing builds, tests,
+and demos with **no GPU present** (a mock data source).
+
+## Usage *(target — pre-release)*
+```
+gpumon              # launch the GUI (default)
+gpumon top          # live TUI in the terminal
+gpumon ps           # one-shot snapshot table
+gpumon ps --json    # ... as JSON, for scripts
+```
+(`serve`, the thin headless collector for remote monitoring, arrives in M9.)
+There's no published binary yet — to **try it today, build from source**: see
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Stack
-Rust · [`aya`](https://github.com/aya-rs/aya) (eBPF, pure Rust) · `kube-rs` · Cargo workspace.
-Shipped as a Kubernetes **DaemonSet**.
+Rust · GUI [`egui`](https://github.com/emilk/egui) on [`wgpu`](https://wgpu.rs) ·
+TUI [`ratatui`](https://ratatui.rs) · GPU [`nvml-wrapper`](https://docs.rs/nvml-wrapper) (NVML),
+DCGM optional. NVIDIA/Linux is the first-class target; AMD/Intel and macOS are post-1.0 behind a
+vendor-neutral collector trait.
 
 ## Layout
 ```
-crates/common    shared #[repr(C)] event types — the kernel ⇄ userspace ⇄ cloud contract (no_std)
-crates/ebpf      eBPF programs (no_std, BPF target): kprobes / tracepoints / LSM
-crates/agent     userspace binary: loads eBPF, reads the ring buffer, enriches, alerts
-crates/enrich    k8s metadata enrichment via kube-rs
-crates/rules     detection engine
-crates/exporter  ship events to the control plane (gRPC/proto)
-crates/fleet     fleet control: signed policy bundles, node identity, multi-tenancy (M8)
-xtask            build orchestration (compile eBPF + run)
+crates/core       data model: snapshots, ring-buffer series, the collector + sink traits
+crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
+crates/ui         GUI frontend (lib): wgpu/egui views & widgets
+crates/cli        terminal frontend (lib): one-shot ps/--json + the live top TUI (ratatui)
+crates/export     machine sinks (lib): prometheus, otlp, splunk (M8)
+crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}
+xtask             build orchestration (dev-only)
 ```
-(`common`, `ebpf`, `agent`, and `xtask` exist today; `enrich`/`rules`/`exporter`/`fleet` land per the roadmap.)
-
-## Open-core
-`agent` is fully usable self-hosted with no cloud. The optional **`agent-cloud`** (private) is a
-fleet control plane — multi-cluster analytics, storage, alerting. Dependencies point **one way**:
-`agent-cloud` → `agent`. This repo never imports the cloud.
+(The crates are scaffolded in M0; see the roadmap.)
 
 ## Security
-`agent` is privileged (loads eBPF, can kill/deny in enforcement mode). Report vulnerabilities
-**privately** — see [`SECURITY.md`](./SECURITY.md).
+Report vulnerabilities **privately** — see [`SECURITY.md`](./SECURITY.md). The monitor is an
+unprivileged, read-mostly tool (NVML needs no root); the notable surfaces are the optional remote
+collector and parsing data from inference endpoints.
 
 ## License
 [Apache-2.0](./LICENSE).
 
 ---
-See [`.rules`](./.rules) for contributor/agent guidance and [`ROADMAP.md`](./ROADMAP.md) for the
-build plan.
+**Build it & contribute:** [`CONTRIBUTING.md`](./CONTRIBUTING.md). The invariants and agent guidance
+live in [`.rules`](./.rules); the design in [`ARCHITECTURE.md`](./ARCHITECTURE.md); the staged build
+plan in [`ROADMAP.md`](./ROADMAP.md).

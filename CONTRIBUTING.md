@@ -1,67 +1,103 @@
-# Contributing to `agent`
+# Contributing
 
-Thanks for your interest in `agent` — the open-source eBPF node agent for Kubernetes, purpose-built
-to observe and secure **GPU/AI inference** workloads. This page is the **hub**; the focused guides
-under [`docs/`](./docs/) cover each concern in depth.
+Thanks for your interest — this is an open-source, native **GPU & AI-inference monitor** in Rust: a
+single binary with **two first-class frontends**, a GPU-accelerated **GUI** (`egui` on `wgpu`) and a
+terminal **CLI/TUI** (`ratatui`), sitting on a headless data engine that also exports to
+Prometheus/OTLP.
 
-> Before anything else, read [**`.rules`**](./.rules) — it's the single source of truth for how this
-> repo is built and what invariants must never be traded away. `CLAUDE.md`, `AGENTS.md`, and
-> `GEMINI.md` all point there too, so humans and AI assistants follow the same rules.
+> Read [**`.rules`**](./.rules) first — the single source of truth for build commands and the
+> invariants that must never be traded away (`CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` all point
+> there). The design is in [**`ARCHITECTURE.md`**](./ARCHITECTURE.md); the staged plan in
+> [**`ROADMAP.md`**](./ROADMAP.md).
 
-## The guides
+## Prerequisites
 
-| Guide | Read it when |
-|-------|--------------|
-| [Building](./docs/contributing-building.md) | Setting up your toolchain and making your first build |
-| [Testing](./docs/contributing-testing.md) | Running the test tiers and adding new tests |
-| [Architecture](./docs/contributing-architecture.md) | Understanding the crates, the ABI, and the design decisions |
-| [CI](./docs/contributing-ci.md) | Knowing what the pipeline gates before merge |
-| [Development process](./docs/contributing-development-process.md) | Opening a change, writing an ADR, milestone flow |
-
-Decision records live in [`docs/adr/`](./docs/adr/); the staged build plan is in
-[`ROADMAP.md`](./ROADMAP.md).
+- **Rust, stable** ([install `rustup`](https://www.rust-lang.org/tools/install)). No nightly, no
+  cross-compile, no `sudo`, no codegen step.
+- For **real data**: an NVIDIA driver / NVML on the host (no root needed). For **no GPU at all**: the
+  built-in **mock** source (`--mock`) — every command builds, runs, tests, and demos without a GPU.
+- For the **GUI**, `wgpu` needs a working GPU *or* a software fallback; the `top` TUI and `ps` need
+  neither and run anywhere, including over SSH.
 
 ## Quick start
 
 ```console
-# 1. Install the toolchain + eBPF prerequisites (see docs/contributing-building.md for your distro)
-rustup show                       # picks up the pinned toolchains automatically
-cargo install bpf-linker          # links the eBPF object
+git clone <repo> && cd agent
+cargo build
 
-# 2. Build (cross-compiles the eBPF object and embeds it in the agent)
-cargo xtask build
+# Run a frontend (`-p gpumon` selects the app; the workspace also has the `xtask` binary):
+cargo run -p gpumon -- gui       # the GPU-accelerated window (the default subcommand)
+cargo run -p gpumon -- top       # the live terminal TUI (great over SSH)
+cargo run -p gpumon -- ps        # one-shot snapshot table — works today against the mock source
+cargo run -p gpumon -- ps --json # the same, as structured JSON for scripts
 
-# 3. Run the fast, no-privilege checks
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all --check
+# No GPU? Drive any of the above from the mock source:
+cargo run -p gpumon -- top --mock   # or: GPUMON_SOURCE=mock cargo run -p gpumon -- top
 ```
 
-Most changes only need those host-side checks — **you do not need root, a GPU, or a cluster** to fix
-a parser, a rule, or a decoder. See [Testing](./docs/contributing-testing.md) for which tier your
-change actually requires.
+A bare `cargo build` builds the whole workspace — nothing is cross-compiled or embedded. Build one
+crate with `cargo build -p <crate>` (e.g. `-p gpumon-core`).
 
-## Finding something to work on
+## Before you push — the local gate
 
-`agent` is built in milestones (`M0`…`M7`) — see [`ROADMAP.md`](./ROADMAP.md). Each milestone opens
-with an ADR and ends with a git tag, a working demo, and green CI. Good entry points:
+Run the same checks CI runs, in one shot:
 
-- **Userspace, no kernel needed:** enrichment parsers, the rule engine, decoders, test fixtures.
-- **eBPF:** a new probe or field capture (needs a Linux kernel + root to verify — tier 3).
-- **Docs:** the [support matrix](./docs/support-matrix.md), the architecture/CI guides below as they fill in.
+```console
+cargo xtask ci    # build + clippy + fmt + test + deny, stops at the first failure
+```
 
-If you're unsure whether a change fits the current milestone, open an issue first — the
-[discipline test](./ROADMAP.md) is *"does this deepen kernel-level signal or k8s/GPU enrichment
-without breaking the verifier, the `common` ABI, the one-way dependency, or self-hostable-zero-cloud?"*
+…or individually:
+
+```console
+cargo test                                   # headless, no GPU needed (mock source)
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all --check
+cargo deny check
+```
+
+CI mirrors this on `ubuntu-latest` with stable Rust and **no GPU** — the mock source keeps the whole
+pipeline headless. (Opening the `wgpu` GUI window needs a real display, so it's a manual smoke step.)
+
+## The testing ladder
+
+Almost everything runs **headless, with no GPU**, via the mock source; only the top two rungs need real
+hardware. Most changes touch only the bottom two.
+
+1. **Unit (headless):** the `core` model + ring buffers, parsers (NVML maps, Ollama `/api/ps`,
+   Prometheus text), view-model transforms, alert rules, and sink formats (Prometheus/OTLP) —
+   table-driven against committed golden fixtures. `cargo test`.
+2. **View-model / output snapshots:** what each surface *would* draw or emit, without a window — GUI
+   view models, the `ratatui` test backend, `ps --json` golden, the Prometheus exposition golden.
+   Because every surface is a pure view of `core`, a new metric gets one model test + thin per-surface
+   assertions.
+3. **Manual smoke (real hardware):** the GUI and `top` on a real **NVIDIA + Linux** host — single-GPU,
+   multi-GPU, MIG. Confirm it renders steadily, idles when nothing changes, and tears down cleanly.
+4. **Real inference e2e:** with a local **Ollama**/**vLLM** (or recorded output), assert the inference
+   panel populates next to the GPU the workload saturates, in both the GUI and the TUI.
+
+Per the overhead budget, the monitor's own footprint is a tracked metric: benchmark startup +
+steady-state, keep buffers bounded regardless of uptime, render on change (not on a spin loop), and
+surface our own CPU/GPU/RAM. Regressions are bugs.
+
+## The no-panic discipline
+
+`unwrap`, `expect`, and `panic!` are **`deny`-lints outside tests** (re-allowed in tests via
+`clippy.toml`). A monitor must degrade gracefully — an absent or asleep GPU, a missing inference
+endpoint, or a dead remote host is a clear "no signal" state, never a crash. Handle the error.
+
+## Milestones & decisions
+
+Work is organized into milestones `M0`…`M10`, laddering to `v1.0.0` (see [`ROADMAP.md`](./ROADMAP.md)).
+Each milestone closes with a **git tag + a working demo + green CI**, and isn't started until the prior
+is green. Record any significant, hard-to-reverse decision in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions) so the *why* outlives the diff.
 
 ## Commit & PR conventions
 
-- One logical change per commit; imperative subject line ("Add the exec tracepoint", not "added").
-- **Never add AI co-author or attribution trailers**, and never commit secrets or fetched/generated
-  data.
-- Open a milestone's design with its ADR ([`docs/adr/`](./docs/adr/)); write a new ADR when you make
-  a significant, hard-to-reverse call.
-- Every PR must pass the full gate — see [CI](./docs/contributing-ci.md).
+- One logical change per commit; imperative subject ("Add the NVML utilization sampler", not "added").
+- **Never add AI co-author or attribution trailers**; never commit secrets or fetched/generated data.
+- Every metric must be reachable in all three human surfaces (GUI, TUI, `--json`) — frontend parity.
+- Every PR must pass the full gate (`cargo xtask ci`).
 
 ## License
 

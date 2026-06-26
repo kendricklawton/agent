@@ -1,12 +1,11 @@
 [package]
-name = "xtask"
+name    = "xtask"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 publish = false
 
-# Build orchestration (the cargo-xtask pattern). `cargo xtask <cmd>` is the canonical entrypoint;
-# the actual eBPF cross-compile lives in crates/agent/build.rs, so xtask stays thin.
+# Dev orchestration (the cargo-xtask pattern). `cargo xtask ci` runs the full local gate.
 [dependencies]
 anyhow.workspace = true
 clap.workspace   = true
