@@ -65,7 +65,8 @@ hardware. Most changes touch only the bottom two.
 
 1. **Unit (headless):** the `core` model + ring buffers, parsers (NVML maps, Ollama `/api/ps`,
    Prometheus text), view-model transforms, alert rules, and sink formats (Prometheus/OTLP) —
-   table-driven against committed golden fixtures. `cargo test`.
+   table-driven against committed golden fixtures. `cargo test`. Invariants (ring buffer, transforms)
+   get **property tests** (`proptest`); the parsers, which eat external input, are **fuzzed** (`cargo-fuzz`).
 2. **View-model / output snapshots:** what each surface *would* draw or emit, without a window — GUI
    view models, the `ratatui` test backend, `ps --json` golden, the Prometheus exposition golden.
    Because every surface is a pure view of `core`, a new metric gets one model test + thin per-surface
@@ -85,12 +86,11 @@ surface our own CPU/GPU/RAM. Regressions are bugs.
 `clippy.toml`). A monitor must degrade gracefully — an absent or asleep GPU, a missing inference
 endpoint, or a dead remote host is a clear "no signal" state, never a crash. Handle the error.
 
-## Milestones & decisions
+## Phases & decisions
 
-Work is organized into milestones; the committed plan is `M0`→`M1` (`v0.1.0`, the first public release),
-then the roadmap's horizon (see [`ROADMAP.md`](./ROADMAP.md)). Each milestone closes with a **git tag + a
-working demo + green CI**, and isn't started until the prior is green. Record any significant,
-hard-to-reverse decision in
+Work is organized into phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release
+(see [`ROADMAP.md`](./ROADMAP.md)). Each phase closes with a **git tag + a working demo + green CI**, and
+isn't started until the prior is green. Record any significant, hard-to-reverse decision in
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions) so the *why* outlives the diff.
 
 ## Commit & PR conventions
@@ -98,6 +98,8 @@ hard-to-reverse decision in
 - One logical change per commit; imperative subject ("Add the NVML utilization sampler", not "added").
 - **Never add AI co-author or attribution trailers**; never commit secrets or fetched/generated data.
 - Every metric must be reachable in all three human surfaces (GUI, TUI, `--json`) — frontend parity.
+- A user-visible change adds a **`CHANGELOG.md`** entry (keep-a-changelog) — it's part of each phase's
+  Definition of Done (see [`ROADMAP.md`](./ROADMAP.md)).
 - Every PR must pass the full gate (`cargo xtask ci`).
 
 ## License

@@ -10,11 +10,11 @@ An **open-source, Apache-2.0**, native **GPU & AI-inference monitor** written in
 binary with **two first-class frontends**: a GPU-accelerated **GUI** *and* a terminal **CLI/TUI**. In
 the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, **no Electron**.
 NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
-is still named `agent`; the rename is a pre-M1 task).
+is still named `agent`; the rename is a pre-Phase-1 task).
 
-> **Status:** the **M0 scaffold is in place** — the workspace builds, `cargo run -p agent -- ps`
-> shows the mock source, and `gui`/`top` point at their milestones (M1; the live `top` TUI is post-0.1.0). The crates
-> (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at M1. The repo is still
+> **Status:** the **Phase 0 scaffold is in place** — the workspace builds, `cargo run -p agent -- ps`
+> shows the mock source, and `gui`/`top` point at their phases (Phase 1; the live `top` TUI is Phase 3). The crates
+> (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at Phase 1. The repo is still
 > named `agent` pending the rename.
 
 ## Commands
@@ -43,8 +43,8 @@ crates/core       data model: snapshots, ring-buffer series, the collector + sin
 crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
 crates/ui         GUI frontend (lib): wgpu/egui — charts, gauges, process table, GPU grid
 crates/cli        terminal frontend (lib): one-shot ps/--json + the live `top` TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk — wired post-0.1.0 (the `Sink` trait is in core)
-crates/app        the single binary: subcommand dispatch (gui/top/ps; serve post-0.1.0), wires collector → core → {ui|cli|sinks}
+crates/export     machine sinks (lib): prometheus, otlp, splunk — wired in Phase 9 (the `Sink` trait is in core)
+crates/app        the single binary: subcommand dispatch (gui/top/ps; serve in Phase 10), wires collector → core → {ui|cli|sinks}
 xtask             build/dev orchestration (dev-only, never shipped)
 ```
 
@@ -58,10 +58,10 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
   all surfaces. The CLI is real (stable `--json`, exit codes, `--watch`), not a toy.
 - **Native, no Electron, single binary.** GUI via `wgpu`, TUI via `ratatui`; fast cold start; static
   where the driver allows. The craft bar is the reason to build this over a web app.
-- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, post-0.1.0) are machine-facing pure
+- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, Phase 9) are machine-facing pure
   views of `core` — we expose data, never store/dashboard/alert. Plug into the user's stack.
 - **Local-first, zero-config.** Launch → local GPUs (and any running Ollama/vLLM) visible, no
-  server/account/config. Exporters (post-0.1.0), remote (post-0.1.0), and persistence (post-0.1.0) are additive.
+  server/account/config. Exporters (Phase 9), remote (Phase 10), and persistence (Phase 7) are additive.
 - **A monitor must never be a hog.** Sample sanely, **render on change** (idle when backgrounded),
   bound every buffer, and surface our own CPU/GPU/RAM. The tool that watches usage cannot cause it.
 - **Inference awareness is the wedge** — Ollama-first model attribution + serving KPIs are why this
@@ -82,17 +82,26 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
   lines. Treat it like an API — additive changes only.
 - **Frameworks are decisions:** GUI `egui`/`wgpu`, TUI `ratatui`, GPU `nvml-wrapper` — see
   [`ARCHITECTURE.md`](./ARCHITECTURE.md); don't swap them casually.
+- **Error model:** `thiserror` for the library crates (`core`/`collector`/`export`), `anyhow` only at the
+  `app` binary boundary. Errors are values — the no-panic rule above is the hard line.
+- **`unsafe`:** `#![forbid(unsafe_code)]` in `core`/`ui`/`cli`; any FFI `unsafe` is **contained and
+  justified** in `collector` (the NVML edge), never above it.
+- **Type the domain:** newtypes for units (`Celsius`, `Watts`, `Mib`, `Pct`) — not bare numerics across
+  boundaries; `#[non_exhaustive]` on public structs/enums (`DeviceSample`, signal states, errors) so the
+  wire contract evolves additively.
+- **Feature flags:** optional sources/sinks (DCGM, Splunk) live behind cargo features; CI builds the
+  default set, `--no-default-features`, and the feature powerset.
+- **MSRV is pinned** (`rust-version`) and CI-guarded; bumping it is a deliberate, noted change.
 
 ## Repo etiquette
 - Commits: one logical change each, imperative subject. **Never add AI co-author / attribution
   trailers.** Never commit secrets or fetched/generated data.
-- Work in milestones; the committed plan is `M0`→`M1` (`v0.1.0`, the first public release), then the
-  roadmap's horizon. Close each with a tag + a working demo + green CI, and don't start one until the
-  prior is green. Record any significant, hard-to-reverse decision in
-  [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
+- Work in phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release. Close each with a tag +
+  a working demo + green CI, and don't start one until the prior is green. Record any significant,
+  hard-to-reverse decision in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
 
 ## Cross-refs
-- The plan & milestones: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.
+- The plan & phases: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.
 - Design, decisions & platform support: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Contributor setup & test tiers: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Security: [`SECURITY.md`](./SECURITY.md)
 - License: **Apache-2.0** ([`LICENSE`](./LICENSE))

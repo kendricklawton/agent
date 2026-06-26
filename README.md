@@ -5,9 +5,9 @@ GPU-accelerated **GUI** and a terminal **CLI/TUI**. See what your GPUs and infer
 actually doing: in a gorgeous window on your desk, live in your terminal over SSH, as `--json` you
 pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes.
 
-> **Status:** early — pivoted from an eBPF agent. The **M0 scaffold is in place** (the workspace
-> builds; `agent ps` already shows a mock source); **M1** (real NVML metrics on screen) is next. The
-> roadmap commits to `v0.1.0` (the first public release); the longer-term shape is its horizon. The repo
+> **Status:** early — pivoted from an eBPF agent. The **Phase 0 scaffold is in place** (the workspace
+> builds; `agent ps` already shows a mock source); **Phase 1** (real NVML metrics on screen) is next. The
+> roadmap ships as `v0.1.0`, built in phases (see `ROADMAP.md`). The repo
 > is still named `agent` pending a rename.
 
 ## Why
@@ -41,7 +41,7 @@ agent top          # live TUI in the terminal
 agent ps           # one-shot snapshot table
 agent ps --json    # ... as JSON, for scripts
 ```
-(`serve`, the thin headless collector for remote monitoring, arrives post-0.1.0.)
+(`serve`, the thin headless collector for remote monitoring, arrives in Phase 10.)
 There's no published binary yet — to **try it today, build from source**: see
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
@@ -57,11 +57,11 @@ crates/core       data model: snapshots, ring-buffer series, the collector + sin
 crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
 crates/ui         GUI frontend (lib): wgpu/egui views & widgets
 crates/cli        terminal frontend (lib): one-shot ps/--json + the live top TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk (post-0.1.0)
+crates/export     machine sinks (lib): prometheus, otlp, splunk (Phase 9)
 crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}
 xtask             build orchestration (dev-only)
 ```
-(The crates are scaffolded in M0; see the roadmap.)
+(The crates are scaffolded in Phase 0; see the roadmap.)
 
 ## Security
 Report vulnerabilities **privately** — see [`SECURITY.md`](./SECURITY.md). The monitor is an

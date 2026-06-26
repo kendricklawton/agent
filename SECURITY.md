@@ -44,7 +44,7 @@ pursue it.
 
 **In scope** (please report):
 
-- **The network surfaces** (`serve` remote + the exporter (post-0.1.0) `/metrics` / OTLP endpoints): a listener
+- **The network surfaces** (`serve` remote + the exporter (Phase 9) `/metrics` / OTLP endpoints): a listener
   exposing metrics without auth or binding more broadly than intended, or a malicious remote
   host/collector being able to crash or exploit the desktop client.
 - **Parsing untrusted input:** malformed data from an inference endpoint (Ollama `/api/ps`, Prometheus
