@@ -13,7 +13,7 @@ NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working 
 is still named `agent`; the rename is a pre-M1 task).
 
 > **Status:** the **M0 scaffold is in place** — the workspace builds, `cargo run -p agent -- ps`
-> shows the mock source, and `gui`/`top` point at their milestones (M1/M3). The crates
+> shows the mock source, and `gui`/`top` point at their milestones (M1; the live `top` TUI is post-0.1.0). The crates
 > (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at M1. The repo is still
 > named `agent` pending the rename.
 
@@ -43,8 +43,8 @@ crates/core       data model: snapshots, ring-buffer series, the collector + sin
 crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
 crates/ui         GUI frontend (lib): wgpu/egui — charts, gauges, process table, GPU grid
 crates/cli        terminal frontend (lib): one-shot ps/--json + the live `top` TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk — wired in M8 (the `Sink` trait is in core)
-crates/app        the single binary: subcommand dispatch (gui/top/ps; serve in M9), wires collector → core → {ui|cli|sinks}
+crates/export     machine sinks (lib): prometheus, otlp, splunk — wired post-0.1.0 (the `Sink` trait is in core)
+crates/app        the single binary: subcommand dispatch (gui/top/ps; serve post-0.1.0), wires collector → core → {ui|cli|sinks}
 xtask             build/dev orchestration (dev-only, never shipped)
 ```
 
@@ -58,10 +58,10 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
   all surfaces. The CLI is real (stable `--json`, exit codes, `--watch`), not a toy.
 - **Native, no Electron, single binary.** GUI via `wgpu`, TUI via `ratatui`; fast cold start; static
   where the driver allows. The craft bar is the reason to build this over a web app.
-- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, M8) are machine-facing pure
+- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, post-0.1.0) are machine-facing pure
   views of `core` — we expose data, never store/dashboard/alert. Plug into the user's stack.
 - **Local-first, zero-config.** Launch → local GPUs (and any running Ollama/vLLM) visible, no
-  server/account/config. Exporters (M8), remote (M9), and persistence (M7) are additive.
+  server/account/config. Exporters (post-0.1.0), remote (post-0.1.0), and persistence (post-0.1.0) are additive.
 - **A monitor must never be a hog.** Sample sanely, **render on change** (idle when backgrounded),
   bound every buffer, and surface our own CPU/GPU/RAM. The tool that watches usage cannot cause it.
 - **Inference awareness is the wedge** — Ollama-first model attribution + serving KPIs are why this
@@ -86,9 +86,10 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
 ## Repo etiquette
 - Commits: one logical change each, imperative subject. **Never add AI co-author / attribution
   trailers.** Never commit secrets or fetched/generated data.
-- Work in milestones (`M0`…`M10`, laddering to `v1.0.0`); close each with a tag + a working demo +
-  green CI, and don't start one until the prior is green. Record any significant, hard-to-reverse
-  decision in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
+- Work in milestones; the committed plan is `M0`→`M1` (`v0.1.0`, the first public release), then the
+  roadmap's horizon. Close each with a tag + a working demo + green CI, and don't start one until the
+  prior is green. Record any significant, hard-to-reverse decision in
+  [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
 
 ## Cross-refs
 - The plan & milestones: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.

@@ -87,9 +87,10 @@ endpoint, or a dead remote host is a clear "no signal" state, never a crash. Han
 
 ## Milestones & decisions
 
-Work is organized into milestones `M0`…`M10`, laddering to `v1.0.0` (see [`ROADMAP.md`](./ROADMAP.md)).
-Each milestone closes with a **git tag + a working demo + green CI**, and isn't started until the prior
-is green. Record any significant, hard-to-reverse decision in
+Work is organized into milestones; the committed plan is `M0`→`M1` (`v0.1.0`, the first public release),
+then the roadmap's horizon (see [`ROADMAP.md`](./ROADMAP.md)). Each milestone closes with a **git tag + a
+working demo + green CI**, and isn't started until the prior is green. Record any significant,
+hard-to-reverse decision in
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions) so the *why* outlives the diff.
 
 ## Commit & PR conventions

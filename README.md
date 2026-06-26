@@ -7,7 +7,8 @@ pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes
 
 > **Status:** early — pivoted from an eBPF agent. The **M0 scaffold is in place** (the workspace
 > builds; `agent ps` already shows a mock source); **M1** (real NVML metrics on screen) is next. The
-> plan ladders to `v1.0.0`. The repo is still named `agent` pending a rename.
+> roadmap commits to `v0.1.0` (the first public release); the longer-term shape is its horizon. The repo
+> is still named `agent` pending a rename.
 
 ## Why
 `nvidia-smi` is a CLI snapshot; `nvtop` is a TUI with no history or inference awareness;
@@ -40,7 +41,7 @@ agent top          # live TUI in the terminal
 agent ps           # one-shot snapshot table
 agent ps --json    # ... as JSON, for scripts
 ```
-(`serve`, the thin headless collector for remote monitoring, arrives in M9.)
+(`serve`, the thin headless collector for remote monitoring, arrives post-0.1.0.)
 There's no published binary yet — to **try it today, build from source**: see
 [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
@@ -56,7 +57,7 @@ crates/core       data model: snapshots, ring-buffer series, the collector + sin
 crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
 crates/ui         GUI frontend (lib): wgpu/egui views & widgets
 crates/cli        terminal frontend (lib): one-shot ps/--json + the live top TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk (M8)
+crates/export     machine sinks (lib): prometheus, otlp, splunk (post-0.1.0)
 crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}
 xtask             build orchestration (dev-only)
 ```
