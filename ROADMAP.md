@@ -197,7 +197,7 @@ The end-to-end slice for one number, proving the engine feeds **two** surfaces. 
 shows your GPU's utilization + memory updating live as a sparkline; `<app> ps --json` prints the same
 numbers for a script — both reading the identical `core`.
 
-- [ ] **`core` model:** `DeviceSample { util, mem_used, mem_total, ts }` (unit newtypes — see `.rules`) and a
+- [x] **`core` model:** `DeviceSample { util, mem_used, mem_total, ts }` (unit newtypes — see `.rules`) and a
   fixed-capacity **ring-buffer** time series per device (bounded — a monitor never grows unboundedly).
 - [ ] **`collector` (NVML):** poll `nvmlDeviceGetUtilizationRates` + `nvmlDeviceGetMemoryInfo` on the
   engine's background loop (default ~1 Hz). Mock collector emits a synthetic signal so every surface is

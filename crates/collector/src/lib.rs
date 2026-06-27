@@ -6,7 +6,7 @@
 
 use std::time::SystemTime;
 
-use agent_core::{CollectError, Collector, DeviceSample};
+use agent_core::{Bytes, CollectError, Collector, DeviceSample, Pct};
 
 /// A synthetic source: a slow triangle wave per device, so the app builds, tests, and demos with no
 /// GPU. Select it with `--mock` (or `AGENT_SOURCE=mock`). Permanent and first-class.
@@ -43,14 +43,14 @@ impl Collector for MockCollector {
                 let phase = self.tick.wrapping_add(u64::from(i) * 17) % 100;
                 let base = if phase < 50 { phase } else { 100 - phase }; // 0..=50
                 let util = (base as u8).saturating_mul(2); // 0..=100
-                DeviceSample {
-                    index: i,
-                    name: format!("Mock GPU {i}"),
-                    util_pct: util,
-                    mem_used: 4_000_000_000 + u64::from(util) * 50_000_000,
-                    mem_total: 24_000_000_000,
-                    ts: now,
-                }
+                DeviceSample::new(
+                    i,
+                    format!("Mock GPU {i}"),
+                    Pct::clamped(util),
+                    Bytes(4_000_000_000 + u64::from(util) * 50_000_000),
+                    Bytes(24_000_000_000),
+                    now,
+                )
             })
             .collect();
         Ok(out)
@@ -68,7 +68,7 @@ mod tests {
         let mut c = MockCollector::new(2);
         let samples = c.sample().unwrap_or_default();
         assert_eq!(samples.len(), 2);
-        assert!(samples.iter().all(|s| s.util_pct <= 100));
+        assert!(samples.iter().all(|s| s.util.get() <= 100));
         assert_eq!(c.name(), "mock");
     }
 }

@@ -23,7 +23,11 @@ pub fn ps(collector: &mut dyn Collector, json: bool) -> anyhow::Result<()> {
             }
             out.push_str(&format!(
                 r#"{{"index":{},"name":{:?},"util_pct":{},"mem_used":{},"mem_total":{}}}"#,
-                s.index, s.name, s.util_pct, s.mem_used, s.mem_total
+                s.index,
+                s.name,
+                s.util.get(),
+                s.mem_used.get(),
+                s.mem_total.get()
             ));
         }
         out.push(']');
@@ -36,7 +40,11 @@ pub fn ps(collector: &mut dyn Collector, json: bool) -> anyhow::Result<()> {
         for s in &samples {
             println!(
                 "{:<4} {:<16} {:>4}%  {:>13}  {:>13}",
-                s.index, s.name, s.util_pct, s.mem_used, s.mem_total
+                s.index,
+                s.name,
+                s.util.get(),
+                s.mem_used.get(),
+                s.mem_total.get()
             );
         }
     }

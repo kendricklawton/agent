@@ -86,9 +86,10 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
   `app` binary boundary. Errors are values — the no-panic rule above is the hard line.
 - **`unsafe`:** `#![forbid(unsafe_code)]` in `core`/`ui`/`cli`; any FFI `unsafe` is **contained and
   justified** in `collector` (the NVML edge), never above it.
-- **Type the domain:** newtypes for units (`Celsius`, `Watts`, `Mib`, `Pct`) — not bare numerics across
-  boundaries; `#[non_exhaustive]` on public structs/enums (`DeviceSample`, signal states, errors) so the
-  wire contract evolves additively.
+- **Type the domain:** newtypes for units (`Pct`, `Bytes` now; `Celsius`/`Watts` arrive with temp/power)
+  — not bare numerics across boundaries. Memory is stored lossless as `Bytes` (display MiB via `as_mib`),
+  so the `ps --json` byte values stay stable. `#[non_exhaustive]` on public structs/enums (`DeviceSample`,
+  `Point`, signal states, errors) so the wire contract evolves additively.
 - **Feature flags:** optional sources/sinks (DCGM, Splunk) live behind cargo features; CI builds the
   default set, `--no-default-features`, and the feature powerset.
 - **MSRV is pinned** (`rust-version`) and CI-guarded; bumping it is a deliberate, noted change.
