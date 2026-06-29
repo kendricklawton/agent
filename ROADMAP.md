@@ -4,7 +4,7 @@
 > GPU and AI-inference monitor** — a single Rust binary with **two first-class frontends** (a
 > GPU-accelerated **GUI** and a terminal **CLI/TUI**) that plugs into the observability stack you already
 > run (Prometheus / OTLP / Splunk). In the spirit of Zed, Ghostty, and Ollama: open-source, fast,
-> single-binary, no Electron, craft-first. Supersedes the prior eBPF Kubernetes-agent plan.
+> single-binary, no Electron, craft-first.
 > **The work is organized into _phases_ (Phase 0 → Phase 11), not a version per step — they ship as public
 > pre-releases and ladder to the one `v0.1.0` release.** **Working name:** *TBD* (the repo is still
 > `agent`; renaming is a pre-Phase-1 task).

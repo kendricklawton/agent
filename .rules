@@ -12,10 +12,10 @@ the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, *
 NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
 is still named `agent`; the rename is a pre-Phase-1 task).
 
-> **Status:** the **Phase 0 scaffold is in place** — the workspace builds, `cargo run -p agent -- ps`
-> shows the mock source, and `gui`/`top` point at their phases (Phase 1; the live `top` TUI is Phase 3). The crates
-> (`core`/`collector`/`ui`/`cli`/`app`) are skeletons; real metrics begin at Phase 1. The repo is still
-> named `agent` pending the rename.
+> **Status:** the **`core` data model is in place** — typed units, the bounded per-device ring-buffer
+> history, and the `Collector`/`Sink` seams — fed by the **mock** source; `cargo run -p agent -- ps`
+> shows it. `ui`/`cli` are still thin (`gui`/`top` point at their phases — Phase 1 and Phase 3); the real
+> **NVML** source is next. The repo is still named `agent` pending the rename.
 
 ## Commands
 | Task | Command |

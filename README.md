@@ -5,10 +5,8 @@ GPU-accelerated **GUI** and a terminal **CLI/TUI**. See what your GPUs and infer
 actually doing: in a gorgeous window on your desk, live in your terminal over SSH, as `--json` you
 pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes.
 
-> **Status:** early — pivoted from an eBPF agent. The **Phase 0 scaffold is in place** (the workspace
-> builds; `agent ps` already shows a mock source); **Phase 1** (real NVML metrics on screen) is next. The
-> roadmap ships as `v0.1.0`, built in phases (see `ROADMAP.md`). The repo
-> is still named `agent` pending a rename.
+> **Status:** in active development — NVIDIA/NVML on Linux first. There's no published binary yet; build
+> from source ([`CONTRIBUTING.md`](./CONTRIBUTING.md)). The repo is still named `agent` pending a rename.
 
 ## Why
 `nvidia-smi` is a CLI snapshot; `nvtop` is a TUI with no history or inference awareness;
@@ -34,21 +32,19 @@ Every surface — GUI, TUI, CLI, and the exporters — is a pure view of one **h
 (`collector` → `core`), so every metric is available everywhere, and the whole thing builds, tests,
 and demos with **no GPU present** (a mock data source).
 
-## Usage *(target — pre-release)*
+## Usage
 ```
 agent              # launch the GUI (default)
 agent top          # live TUI in the terminal
 agent ps           # one-shot snapshot table
 agent ps --json    # ... as JSON, for scripts
+agent serve        # thin headless collector, for remote/multi-host monitoring
 ```
-(`serve`, the thin headless collector for remote monitoring, arrives in Phase 10.)
-There's no published binary yet — to **try it today, build from source**: see
-[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## Stack
 Rust · GUI [`egui`](https://github.com/emilk/egui) on [`wgpu`](https://wgpu.rs) ·
 TUI [`ratatui`](https://ratatui.rs) · GPU [`nvml-wrapper`](https://docs.rs/nvml-wrapper) (NVML),
-DCGM optional. NVIDIA/Linux is the first-class target; AMD/Intel and macOS are post-1.0 behind a
+DCGM optional. NVIDIA/Linux is the first-class target; AMD/Intel and macOS sit behind the same
 vendor-neutral collector trait.
 
 ## Layout
@@ -57,11 +53,10 @@ crates/core       data model: snapshots, ring-buffer series, the collector + sin
 crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
 crates/ui         GUI frontend (lib): wgpu/egui views & widgets
 crates/cli        terminal frontend (lib): one-shot ps/--json + the live top TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk (Phase 9)
+crates/export     machine sinks (lib): prometheus, otlp, splunk
 crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}
 xtask             build orchestration (dev-only)
 ```
-(The crates are scaffolded in Phase 0; see the roadmap.)
 
 ## Security
 Report vulnerabilities **privately** — see [`SECURITY.md`](./SECURITY.md). The monitor is an
