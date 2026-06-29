@@ -1,0 +1,71 @@
+# Release — tag-triggered. Builds a reproducible binary, checksums it, signs it keyless (sigstore
+# cosign — no stored private key), and publishes a GitHub Release. It exists from Phase 0 so that
+# packaging/signing breaks surface early; it ships nothing user-facing yet, but every phase preview tag
+# (`0.1.0-alpha.N`) exercises the whole path. See ROADMAP.md (Phase 0).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'           # final releases, e.g. v0.1.0
+      - '[0-9]+.[0-9]+.[0-9]+-alpha.*'    # phase previews, e.g. 0.1.0-alpha.3
+
+permissions:
+  contents: write   # create the GitHub Release
+  id-token: write   # cosign keyless signing (sigstore OIDC)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: build · sign · publish (x86_64-linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show # rust-toolchain.toml's pin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # --locked: build from the committed Cargo.lock, no implicit updates — reproducible releases.
+      - name: Build the release binary
+        run: cargo build --release --locked -p agent
+
+      - name: Package + checksum
+        id: package
+        run: |
+          set -euo pipefail
+          name="agent-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${name}"
+          cp target/release/agent "dist/${name}/agent"
+          cp README.md LICENSE "dist/${name}/"
+          tar -C dist -czf "${name}.tar.gz" "${name}"
+          sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          echo "tarball=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless: identity comes from the GitHub OIDC token; the signature + cert are verifiable with
+      # `cosign verify-blob` against this workflow's identity. No long-lived secret to manage or leak.
+      - name: Sign the artifact (keyless)
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature   "${{ steps.package.outputs.tarball }}.sig" \
+            --output-certificate "${{ steps.package.outputs.tarball }}.pem" \
+            "${{ steps.package.outputs.tarball }}"
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-alpha.') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.package.outputs.tarball }}
+            ${{ steps.package.outputs.tarball }}.sha256
+            ${{ steps.package.outputs.tarball }}.sig
+            ${{ steps.package.outputs.tarball }}.pem

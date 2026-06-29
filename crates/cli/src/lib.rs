@@ -1,7 +1,7 @@
 //! `agent-cli` — the terminal frontend: one-shot `ps` (+ `--json`) and the live `top` TUI.
 //!
 //! A pure view of [`agent_core`](agent_core) (see ARCHITECTURE.md). `ps` works today against any
-//! collector; the live `top` dashboard (`ratatui`) is wired in M3.
+//! collector; the live `top` dashboard (`ratatui`) is wired in Phase 3.
 
 use agent_core::Collector;
 
@@ -15,7 +15,7 @@ pub fn ps(collector: &mut dyn Collector, json: bool) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
     if json {
-        // Minimal hand-rolled JSON for the scaffold; a `serde` schema + stable field names land in M1.
+        // Minimal hand-rolled JSON for the scaffold; a `serde` schema + stable field names land in Phase 1.
         let mut out = String::from("[");
         for (i, s) in samples.iter().enumerate() {
             if i > 0 {
@@ -51,10 +51,10 @@ pub fn ps(collector: &mut dyn Collector, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The live terminal dashboard. Wired in M3 (`ratatui`).
+/// The live terminal dashboard. Wired in Phase 3 (`ratatui`).
 ///
 /// # Errors
-/// Returns an error until the TUI lands in M3.
+/// Returns an error until the TUI lands in Phase 3.
 pub fn top(_collector: Box<dyn Collector>) -> anyhow::Result<()> {
-    anyhow::bail!("the live `top` TUI lands in M3 — `ps` works now (see ROADMAP.md)")
+    anyhow::bail!("the live `top` TUI lands in Phase 3 — `ps` works now (see ROADMAP.md)")
 }

@@ -100,8 +100,6 @@ isn't started until the prior is green. Record any significant, hard-to-reverse 
 - One logical change per commit; imperative subject ("Add the NVML utilization sampler", not "added").
 - **Never add AI co-author or attribution trailers**; never commit secrets or fetched/generated data.
 - Every metric must be reachable in all three human surfaces (GUI, TUI, `--json`) — frontend parity.
-- A user-visible change adds a **`CHANGELOG.md`** entry (keep-a-changelog) — it's part of each phase's
-  Definition of Done (see [`ROADMAP.md`](./ROADMAP.md)).
 - Every PR must pass the full gate (`cargo xtask ci`).
 
 ## License

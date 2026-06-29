@@ -70,8 +70,12 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
    *machine-facing pure views of `core`*, the mirror of the human frontends. We expose data; we never
    become a dashboard, a time-series database, or an alerting platform. The **anti-platform** move:
    plug into the user's stack, don't rebuild it.
-
-## Platform support
+7. **Release pipeline from day one; keyless signing.** A tag-triggered workflow builds (from the committed
+   `Cargo.lock`, `--locked`), checksums, **keyless-signs** (sigstore `cosign` over GitHub OIDC — no
+   long-lived private key to manage or leak), and publishes — wired in Phase 0, before there's anything to
+   ship. Phase previews tag `0.1.0-alpha.N`; the final is `v0.1.0`. *Why:* deferring release/packaging to
+   the end is the classic way to discover signing and packaging breaks when they're most expensive — so we
+   exercise the whole path on the first preview tag. *Rejected:* long-lived GPG/private keys; packaging only at 1.0.
 
 Unprivileged userspace — no root, no kernel modules. For real data you need a GPU + its driver; the
 **mock** source works everywhere with none.

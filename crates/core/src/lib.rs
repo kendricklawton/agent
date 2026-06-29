@@ -292,7 +292,7 @@ impl std::error::Error for CollectError {}
 /// A machine-facing view of the model — a Prometheus `/metrics` endpoint, an OTLP exporter, a Splunk
 /// sink, a JSON stream. The mirror of [`Collector`]: data flows *out*. Like the human frontends, a
 /// sink only reads the model; it never reaches into a data source ("integrate, don't reimplement").
-/// Stubbed here as the export seam; implementations land in M8.
+/// Stubbed here as the export seam; implementations land in Phase 9.
 pub trait Sink {
     /// A short label for the sink ("prometheus", "otlp", …).
     fn name(&self) -> &str;

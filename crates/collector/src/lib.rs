@@ -2,7 +2,7 @@
 //!
 //! The `mock` source is permanent and needs no GPU (see ARCHITECTURE.md): it keeps every build/test/demo path
 //! working with no driver present. The NVML source (the source of truth), DCGM, and the inference
-//! scraper land in M1/M6.
+//! scraper land in Phase 1/Phase 6.
 
 use std::time::SystemTime;
 
@@ -57,7 +57,7 @@ impl Collector for MockCollector {
     }
 }
 
-// TODO(M1): `NvmlCollector` via `nvml-wrapper` — NVML is the source of truth (see ARCHITECTURE.md).
+// TODO(Phase 1): `NvmlCollector` via `nvml-wrapper` — NVML is the source of truth (see ARCHITECTURE.md).
 
 #[cfg(test)]
 mod tests {

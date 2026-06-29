@@ -157,28 +157,27 @@ recommended, not sacred; each is recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md
 A reproducible Rust build: one binary that dispatches subcommands, opens a GPU-accelerated window
 *and* prints a CLI table, gated by CI — **and a release pipeline that exists from day one.**
 
-- [ ] Cargo workspace + the crate split (below).
-- [ ] **Rename off `agent` (R8):** once a name is chosen, rename the repo, crates (`agent-*` → `<name>-*`),
-  binary, and all docs — one discrete pre-Phase-1 commit, before external eyes.
-- [ ] **Binary dispatch (the DX spine):** `app` is one binary with subcommands — `gui` (default on a
+- [x] Cargo workspace + the crate split (below).
+- [x] **Binary dispatch (the DX spine):** `app` is one binary with subcommands — `gui` (default on a
   desktop) · `top` (live TUI) · `ps` (one-shot, `--json`); `serve` is added in Phase 10. On a headless box
   with no display, bare invocation falls back to `top` with a hint. Docker/Ollama-style verbs.
-- [ ] **Decision: the frontend stacks** → recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md). **GUI:** `egui`
+- [x] **Decision: the frontend stacks** → recorded in [`ARCHITECTURE.md`](ARCHITECTURE.md). **GUI:** `egui`
   on `wgpu`; **TUI:** `ratatui`. Both are pure views of `core`. (Bespoke `wgpu`/GPUI noted for hero visuals later.)
-- [ ] **Decision: the GPU data source** → [`ARCHITECTURE.md`](ARCHITECTURE.md): **NVML** is the source of
+- [x] **Decision: the GPU data source** → [`ARCHITECTURE.md`](ARCHITECTURE.md): **NVML** is the source of
   truth (`nvml-wrapper`); **DCGM** optional (richer/MIG); a **mock** source so the app builds, tests, and
   demos **with no GPU present**. Three sources behind one trait.
-- [ ] **Headless-engine split** wired as empty crates: `collector` produces samples, `core` holds the
+- [x] **Headless-engine split** wired as empty crates: `collector` produces samples, `core` holds the
   model (incl. the stubbed `Collector` *and* `Sink` traits — the in/out seams), `ui`/`cli` render —
   with the mock collector already feeding fake data so both the window and the `ps` table show something.
-- [ ] CI: `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo deny check`, a headless
+- [x] CI: `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo deny check`, a headless
   test run (mock collector → no GPU), and the **feature matrix** (`--no-default-features` + powerset). `gui`
   window-open is a manual smoke step; `ps`/`top` are CI-testable headlessly.
-- [ ] **Release pipeline from day one (don't defer packaging):** a tag-triggered CI workflow that builds,
-  **signs**, checksums, and publishes an artifact, plus a `CHANGELOG.md` (keep-a-changelog) and
-  conventional-commit-friendly history. It ships nothing real yet — but from Phase 1 on, every phase emits
-  a signed **`0.1.0-alpha.N`**, so packaging/signing breaks surface early, not at Phase 11.
-- [ ] Record the foundational decisions in [`ARCHITECTURE.md`](ARCHITECTURE.md) — the *why* that outlives the diff.
+- [x] **Release pipeline from day one (don't defer packaging):** a tag-triggered CI workflow that builds,
+  **signs**, checksums, and publishes an artifact with auto-generated release notes. It ships nothing real
+  yet — but from Phase 1 on, every phase emits a signed **`0.1.0-alpha.N`**, so packaging/signing breaks
+  surface early, not at Phase 11. (A curated `CHANGELOG.md` waits until **after launch** — the
+  auto-generated notes cover the `0.x` previews.)
+- [x] Record the foundational decisions in [`ARCHITECTURE.md`](ARCHITECTURE.md) — the *why* that outlives the diff.
 - [ ] Tag the phase (`gui` opens + renders steadily; `ps` prints a stub table; the release workflow runs).
 
 > **Crate layout (the target):**
@@ -238,10 +237,18 @@ updating in place — the same `core` the GUI uses, no window required.
   refreshing in place; keyboard quit/scroll; resizes cleanly.
 - [ ] **Same model, different renderer:** the TUI reads `core` exactly like the GUI — proving the
   pure-view keystone. No metric is GUI-only.
-- [ ] **Terminal-grade craft:** works over SSH, in tmux, on a 256-color or truecolor terminal; sane
-  fallback on a dumb terminal; low redraw cost (don't spin the remote CPU).
+- [ ] **btop-grade visual bar (the explicit benchmark):** side-by-side with **btop**, the `top` view
+  should hold its own. Concretely: **braille-resolution graphs** (`Canvas` + `Marker::Braille`, fed the
+  viewport-decimated series), **truecolor gradient meters** (a custom gauge coloring each cell green→
+  yellow→red — `ratatui`'s flat `Gauge` is not enough), **rounded panels** (`BorderType::Rounded`) with
+  tasteful titles/spacing, and **smooth render-on-change** updates (no jump, no spin — we *beat* btop's
+  fixed-interval redraw). Keep a btop screenshot as the reference.
+- [ ] **Terminal-grade craft + graceful degradation:** works over SSH, in tmux; **detect capability** —
+  truecolor → 256-color → mono, braille → ASCII fallback — so it's gorgeous on a good terminal and *fine*
+  on a dumb one; low redraw cost (don't spin the remote CPU).
 - [ ] **Tests:** TUI view-model from mock samples (assert the rendered buffer/grid headlessly via
-  `ratatui`'s test backend); resize + no-GPU states.
+  `ratatui`'s `TestBackend`); resize + no-GPU states. Snapshot the braille graph cells and the gradient
+  meter colors so the **visual bar is regression-tested, not just eyeballed**, plus the ASCII/mono fallbacks.
 
 > **Why the TUI early (Phase 3, not late):** headless GPU boxes and SSH are *the* place people need a
 > monitor and *can't* run a GUI. Establishing the TUI now makes "both surfaces" a real discipline for
@@ -382,7 +389,8 @@ the terminal *or* their Grafana. **This is where `v0.1.0`, the first public rele
 **Definition of Done (every phase closes only when all hold):**
 - Green gate — `fmt` · `clippy -D warnings` · `test` · `deny` (the `cargo xtask ci` bundle), incl. the feature matrix.
 - A working **demo** of the phase's observable outcome.
-- Docs updated where touched (README / ARCHITECTURE / `.rules`) **+ a `CHANGELOG.md` entry**.
+- Docs updated where touched (README / ARCHITECTURE / `.rules`). *(A curated `CHANGELOG.md` starts after
+  launch; until then the release notes are auto-generated.)*
 - The **craft pass** — no rough edges in the surfaces this phase touched, *and* the GUI **feel** accrues
   here: keyboard-driven nav, themes, remembered window + layout state, and (as surfaces pile up) a
   **command palette** — the Zed/Ghostty polish, **complete by Phase 11**. Craft is *continuous*, not a one-off phase.
