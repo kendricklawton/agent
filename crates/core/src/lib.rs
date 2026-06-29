@@ -278,16 +278,13 @@ pub trait Collector {
 }
 
 /// A recoverable failure to sample a source (driver missing, device asleep, …).
-#[derive(Debug)]
-pub struct CollectError(pub String);
-
-impl std::fmt::Display for CollectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "collector error: {}", self.0)
-    }
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum CollectError {
+    /// The data source could not be sampled.
+    #[error("collector error: {0}")]
+    Source(String),
 }
-
-impl std::error::Error for CollectError {}
 
 /// A machine-facing view of the model — a Prometheus `/metrics` endpoint, an OTLP exporter, a Splunk
 /// sink, a JSON stream. The mirror of [`Collector`]: data flows *out*. Like the human frontends, a
@@ -302,16 +299,13 @@ pub trait Sink {
 }
 
 /// A recoverable failure to publish to a sink (endpoint unreachable, encode error, …).
-#[derive(Debug)]
-pub struct SinkError(pub String);
-
-impl std::fmt::Display for SinkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sink error: {}", self.0)
-    }
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SinkError {
+    /// The sink could not publish the snapshot.
+    #[error("sink error: {0}")]
+    Publish(String),
 }
-
-impl std::error::Error for SinkError {}
 
 #[cfg(test)]
 mod tests {
@@ -386,6 +380,16 @@ mod tests {
             Some(21)
         );
         assert!(m.device(2).is_none());
+    }
+
+    #[test]
+    fn error_display_is_stable() {
+        // `cli` surfaces these via `to_string()` — guard the message against silent drift.
+        assert_eq!(
+            CollectError::Source("x".into()).to_string(),
+            "collector error: x"
+        );
+        assert_eq!(SinkError::Publish("y".into()).to_string(), "sink error: y");
     }
 
     #[test]

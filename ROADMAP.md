@@ -178,7 +178,6 @@ A reproducible Rust build: one binary that dispatches subcommands, opens a GPU-a
   surface early, not at Phase 11. (A curated `CHANGELOG.md` waits until **after launch** — the
   auto-generated notes cover the `0.x` previews.)
 - [x] Record the foundational decisions in [`ARCHITECTURE.md`](ARCHITECTURE.md) — the *why* that outlives the diff.
-- [ ] Tag the phase (`gui` opens + renders steadily; `ps` prints a stub table; the release workflow runs).
 
 > **Crate layout (the target):**
 > ```

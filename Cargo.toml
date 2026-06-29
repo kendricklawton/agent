@@ -17,6 +17,8 @@ agent-cli       = { path = "crates/cli",        version = "0.1.0" }
 # --- runtime / CLI / errors ---
 anyhow = { version = "1", default-features = false, features = ["std"] }
 clap   = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+# Error model for the library crates (.rules): typed, #[non_exhaustive] errors.
+thiserror = "2"
 
 # --- the chosen stack, wired per milestone (see ROADMAP.md / ARCHITECTURE.md). Declared here so the
 #     decisions live in one place; a crate opts in with `dep.workspace = true` when its milestone lands.
