@@ -6,6 +6,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+arc-swap.workspace  = true
 thiserror.workspace = true
 
 [lints]

@@ -7,7 +7,10 @@ publish = false
 
 [dependencies]
 agent-core.workspace = true
-anyhow.workspace      = true
+anyhow.workspace     = true
+eframe.workspace     = true
+egui.workspace       = true
+egui_plot.workspace  = true
 
 [lints]
 workspace = true

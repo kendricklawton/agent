@@ -19,14 +19,17 @@ anyhow = { version = "1.0.103", default-features = false, features = ["std"] }
 clap   = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 # Error model for the library crates (.rules): typed, #[non_exhaustive] errors.
 thiserror = "2"
+# Lock-free snapshot publication (engine → surfaces), §0.5 R1.
+arc-swap = "1"
 
 # --- the chosen stack, wired per milestone (see ROADMAP.md / ARCHITECTURE.md). Declared here so the
 #     decisions live in one place; a crate opts in with `dep.workspace = true` when its milestone lands.
 # GPU source (M1): NVML via dlopen — needs no NVIDIA library at build time.
 nvml-wrapper = "0.10"
-# GUI frontend (M1+): egui on wgpu.
-eframe = "0.29"
-egui   = "0.29"
+# GUI frontend (M1+): egui on wgpu. egui_plot is a separate crate (versions locked in step with egui).
+eframe    = "0.29"
+egui      = "0.29"
+egui_plot = "0.29"
 # TUI frontend (ratatui) is declared when M3 lands.
 
 # House lints (each crate opts in with `[lints] workspace = true`). The no-panic discipline:

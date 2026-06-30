@@ -200,7 +200,7 @@ numbers for a script — both reading the identical `core`.
 - [x] **`collector` (NVML):** poll `nvmlDeviceGetUtilizationRates` + `nvmlDeviceGetMemoryInfo` on the
   engine's background loop (default ~1 Hz). Mock collector emits a synthetic signal so every surface is
   identical with no GPU.
-- [ ] **GUI:** one panel — a number + a live sparkline bound to the ring buffer; redraw on new data,
+- [x] **GUI:** one panel — a number + a live sparkline bound to the ring buffer; redraw on new data,
   **idle when nothing changed** (adaptive frame rate, not a busy spin).
 - [ ] **CLI:** `ps` prints a human table; `ps --json` prints structured JSON (the scripting contract —
   `schema_version`, stable field names, exit codes).

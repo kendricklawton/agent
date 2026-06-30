@@ -49,6 +49,8 @@ pub mod units {
 
 pub use units::{Bytes, Pct};
 
+pub use engine::{DeviceSnapshot, SignalState, Snapshot};
+
 /// A single point-in-time sample of one GPU device. `#[non_exhaustive]` so fields can be added
 /// (temperature, power, …) without breaking renderers — construct via [`DeviceSample::new`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,8 +66,8 @@ pub struct DeviceSample {
     pub mem_used: Bytes,
     /// Total memory.
     pub mem_total: Bytes,
-    // TODO(§0.5 R3): the engine stamps `ts` once the sampling loop lands; the collector stops stamping.
-    /// When the sample was taken.
+    /// When the sample was taken. The engine restamps this with its own clock on ingest (one clock —
+    /// §0.5 R3), so a collector's own value is overwritten.
     pub ts: SystemTime,
 }
 
@@ -155,6 +157,20 @@ pub struct Point {
     pub mem_used: Bytes,
     /// Total memory.
     pub mem_total: Bytes,
+}
+
+impl Point {
+    /// Build a point. Needed because `#[non_exhaustive]` forbids struct-literal construction from other
+    /// crates (e.g. a surface building view/test data).
+    #[must_use]
+    pub fn new(ts: SystemTime, util: Pct, mem_used: Bytes, mem_total: Bytes) -> Self {
+        Self {
+            ts,
+            util,
+            mem_used,
+            mem_total,
+        }
+    }
 }
 
 /// Bounded history for a single device: stable identity plus one ring-buffer of [`Point`]s.
@@ -269,8 +285,10 @@ impl Model {
 }
 
 /// A data source: NVML, DCGM, the inference scraper, or the mock. Frontends never call this — only
-/// the collector loop does (see ARCHITECTURE.md). Errors degrade to a "no signal" state, never a panic.
-pub trait Collector {
+/// the engine loop does (see ARCHITECTURE.md). Errors degrade to a "no signal" state, never a panic.
+///
+/// `Send`, because the engine owns the collector on its background sampling thread (§0.5 R10).
+pub trait Collector: Send {
     /// A short label for the source ("nvml", "mock", …).
     fn name(&self) -> &str;
     /// Sample every visible device once.
@@ -305,6 +323,340 @@ pub enum SinkError {
     /// The sink could not publish the snapshot.
     #[error("sink error: {0}")]
     Publish(String),
+}
+
+/// The headless engine: it owns the one sampling loop, stamps the clock, appends to a [`Model`], and
+/// publishes an immutable [`Snapshot`] that every surface reads lock-free (ARCHITECTURE.md §0.5, R1/R10).
+pub mod engine {
+    use std::sync::Arc;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::thread::JoinHandle;
+    use std::time::{Duration, SystemTime};
+
+    use arc_swap::ArcSwap;
+
+    use super::{Collector, Model, Point};
+
+    /// Hard floor on the sample interval — the engine never samples faster than this, so no config can
+    /// make the loop busy-spin or the monitor a hog (keystone 6).
+    const MIN_INTERVAL: Duration = Duration::from_millis(10);
+
+    /// How a signal renders when it isn't a clean reading — every surface renders this explicitly, never
+    /// a blank or a panic (§0.5). Phase 1 produces `Ok`/`NoData`/`Stale`; per-device states (Phase 2) and
+    /// remote hosts (Phase 10) fill in the rest. `#[non_exhaustive]` so they can be added additively.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[non_exhaustive]
+    pub enum SignalState {
+        /// A fresh, valid reading.
+        Ok,
+        /// No reading has arrived yet.
+        NoData,
+        /// The device is in a low-power/sleep state.
+        Asleep,
+        /// The source doesn't expose this metric.
+        Unsupported,
+        /// The reading requires privileges we don't have.
+        PermissionDenied,
+        /// The last good reading is older than expected (the loop stalled or the source is failing).
+        Stale {
+            /// Time since the last good reading.
+            age: Duration,
+        },
+        /// A remote host is unreachable (Phase 10).
+        Offline {
+            /// The unreachable host.
+            host: String,
+        },
+    }
+
+    /// An immutable, point-in-time view of every device — what a surface renders. Published through an
+    /// `ArcSwap`; surfaces hold a cheap `Arc` clone and never touch a collector.
+    #[derive(Clone, Debug)]
+    #[non_exhaustive]
+    pub struct Snapshot {
+        /// The overall signal state for this sample (per-device states arrive in Phase 2).
+        pub state: SignalState,
+        /// One entry per device, in first-seen order.
+        pub devices: Vec<DeviceSnapshot>,
+    }
+
+    /// One device's slice of a [`Snapshot`]: identity, the latest reading, and the bounded history the
+    /// sparkline draws.
+    #[derive(Clone, Debug)]
+    #[non_exhaustive]
+    pub struct DeviceSnapshot {
+        /// Stable device index.
+        pub index: u32,
+        /// Human-readable name.
+        pub name: String,
+        /// The most recent reading, if any.
+        pub latest: Option<Point>,
+        /// Retained points, oldest-to-newest.
+        pub history: Vec<Point>,
+    }
+
+    impl Snapshot {
+        /// The pre-first-sample snapshot: no devices, `NoData`.
+        fn empty() -> Self {
+            Self {
+                state: SignalState::NoData,
+                devices: Vec::new(),
+            }
+        }
+
+        /// Build an immutable snapshot from the live model, tagging it with `state`.
+        fn from_model(model: &Model, state: SignalState) -> Self {
+            let devices = model
+                .devices()
+                .iter()
+                .map(|d| DeviceSnapshot {
+                    index: d.index,
+                    name: d.name.clone(),
+                    latest: d.latest().copied(),
+                    history: d.series().iter().copied().collect(),
+                })
+                .collect();
+            Self { state, devices }
+        }
+    }
+
+    /// Engine tunables. Introduced minimally here (§0.5's config grows per phase): the sample interval
+    /// and how much history to retain.
+    #[derive(Clone, Copy, Debug)]
+    pub struct EngineConfig {
+        /// How often the engine samples (the collector owns no clock).
+        pub interval: Duration,
+        /// How far back the ring buffers retain history.
+        pub history: Duration,
+    }
+
+    impl Default for EngineConfig {
+        fn default() -> Self {
+            Self {
+                interval: Duration::from_secs(1),
+                history: Duration::from_secs(300),
+            }
+        }
+    }
+
+    impl EngineConfig {
+        /// Ring-buffer capacity: `history / interval` (using the same floored interval the loop runs at),
+        /// at least one slot.
+        fn cap(self) -> usize {
+            let interval = self.interval.max(MIN_INTERVAL).as_secs_f64();
+            ((self.history.as_secs_f64() / interval).round() as usize).max(1)
+        }
+    }
+
+    /// A running engine. Holds the published snapshot cell and the loop thread; dropping it stops the
+    /// loop and joins cleanly.
+    pub struct EngineHandle {
+        snapshot: Arc<ArcSwap<Snapshot>>,
+        shutdown: mpsc::Sender<()>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl EngineHandle {
+        /// The latest published snapshot — a cheap, lock-free `Arc` clone.
+        #[must_use]
+        pub fn latest(&self) -> Arc<Snapshot> {
+            self.snapshot.load_full()
+        }
+    }
+
+    impl Drop for EngineHandle {
+        fn drop(&mut self) {
+            // Wake the loop so it observes the shutdown and exits promptly, then join.
+            let _ = self.shutdown.send(());
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// One sampling step — sample, stamp the engine clock, ingest, publish. Factored out of the loop so
+    /// it's testable without a thread. `last_ok` tracks the last successful sample time, so a failure
+    /// renders as `Stale{age}` (or `NoData` before any success) without dropping the retained history.
+    fn tick(
+        collector: &mut dyn Collector,
+        model: &mut Model,
+        cell: &ArcSwap<Snapshot>,
+        last_ok: &mut Option<SystemTime>,
+    ) {
+        match collector.sample() {
+            Ok(mut samples) => {
+                // The engine owns the one clock (§0.5 R3): stamp every reading here, not in the source.
+                let now = SystemTime::now();
+                for s in &mut samples {
+                    s.ts = now;
+                }
+                model.ingest(&samples);
+                *last_ok = Some(now);
+                cell.store(Arc::new(Snapshot::from_model(model, SignalState::Ok)));
+            }
+            Err(_e) => {
+                let state = match *last_ok {
+                    Some(t) => SignalState::Stale {
+                        age: t.elapsed().unwrap_or_default(),
+                    },
+                    None => SignalState::NoData,
+                };
+                cell.store(Arc::new(Snapshot::from_model(model, state)));
+            }
+        }
+    }
+
+    /// Spawn the engine: one background thread that samples `collector` every `cfg.interval`, publishes
+    /// an immutable [`Snapshot`], and calls `waker` after each publish so a reactive surface (the GUI)
+    /// repaints on new data and idles otherwise. Returns once the thread is running.
+    ///
+    /// # Errors
+    /// If the OS cannot spawn the engine thread.
+    pub fn spawn(
+        mut collector: Box<dyn Collector>,
+        cfg: EngineConfig,
+        waker: Box<dyn Fn() + Send + Sync>,
+    ) -> std::io::Result<EngineHandle> {
+        // Floor the interval so a misconfigured (e.g. zero) value can't turn `recv_timeout` into a
+        // busy-spin — the monitor must never be a hog (keystone 6), whatever config later feeds in.
+        let interval = cfg.interval.max(MIN_INTERVAL);
+        let snapshot = Arc::new(ArcSwap::from_pointee(Snapshot::empty()));
+        let (tx, rx) = mpsc::channel::<()>();
+        let cap = cfg.cap();
+        let cell = Arc::clone(&snapshot);
+
+        let thread = std::thread::Builder::new()
+            .name("agent-engine".to_owned())
+            .spawn(move || {
+                let mut model = Model::new(cap);
+                let mut last_ok: Option<SystemTime> = None;
+                loop {
+                    tick(collector.as_mut(), &mut model, &cell, &mut last_ok);
+                    waker();
+                    match rx.recv_timeout(interval) {
+                        Err(RecvTimeoutError::Timeout) => {}
+                        // Shutdown signalled, or the handle (and its Sender) was dropped.
+                        Err(RecvTimeoutError::Disconnected) | Ok(()) => break,
+                    }
+                }
+            })?;
+
+        Ok(EngineHandle {
+            snapshot,
+            shutdown: tx,
+            thread: Some(thread),
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{Bytes, CollectError, DeviceSample, Pct};
+
+        /// A collector that yields one device with an increasing util and a sentinel `ts`, so we can
+        /// prove the engine restamps.
+        #[derive(Default)]
+        struct StubCollector {
+            n: u8,
+        }
+        impl Collector for StubCollector {
+            fn name(&self) -> &str {
+                "stub"
+            }
+            fn sample(&mut self) -> Result<Vec<DeviceSample>, CollectError> {
+                self.n = self.n.wrapping_add(1);
+                Ok(vec![DeviceSample::new(
+                    0,
+                    "Stub".to_owned(),
+                    Pct::clamped(self.n),
+                    Bytes(1 << 30),
+                    Bytes(8 << 30),
+                    SystemTime::UNIX_EPOCH, // the engine must overwrite this
+                )])
+            }
+        }
+
+        struct FailCollector;
+        impl Collector for FailCollector {
+            fn name(&self) -> &str {
+                "fail"
+            }
+            fn sample(&mut self) -> Result<Vec<DeviceSample>, CollectError> {
+                Err(CollectError::Source("boom".to_owned()))
+            }
+        }
+
+        #[test]
+        fn tick_advances_bounds_and_restamps() {
+            let cell = ArcSwap::from_pointee(Snapshot::empty());
+            let mut model = Model::new(3);
+            let mut collector = StubCollector::default();
+            let mut last_ok = None;
+            for _ in 0..5 {
+                tick(&mut collector, &mut model, &cell, &mut last_ok);
+            }
+            let snap = cell.load_full();
+            assert!(matches!(snap.state, SignalState::Ok));
+            let d = &snap.devices[0];
+            assert_eq!(d.history.len(), 3); // bounded at cap, oldest dropped
+            assert_eq!(d.latest.expect("a reading").util.get(), 5); // advanced
+            assert_ne!(d.latest.expect("a reading").ts, SystemTime::UNIX_EPOCH); // engine restamped
+            assert!(last_ok.is_some());
+        }
+
+        #[test]
+        fn tick_failure_before_any_success_is_nodata() {
+            let cell = ArcSwap::from_pointee(Snapshot::empty());
+            let mut model = Model::new(3);
+            let mut collector = FailCollector;
+            let mut last_ok = None;
+            tick(&mut collector, &mut model, &cell, &mut last_ok);
+            assert!(matches!(cell.load_full().state, SignalState::NoData));
+            assert!(last_ok.is_none());
+        }
+
+        #[test]
+        fn tick_failure_after_success_is_stale_and_keeps_history() {
+            let cell = ArcSwap::from_pointee(Snapshot::empty());
+            let mut model = Model::new(3);
+            let mut last_ok = None;
+
+            tick(
+                &mut StubCollector::default(),
+                &mut model,
+                &cell,
+                &mut last_ok,
+            ); // one good sample
+            tick(&mut FailCollector, &mut model, &cell, &mut last_ok); // then a failure
+
+            let snap = cell.load_full();
+            assert!(matches!(snap.state, SignalState::Stale { .. }));
+            // The retained history survives the failure — we degrade, we don't blank.
+            assert_eq!(snap.devices[0].history.len(), 1);
+        }
+
+        #[test]
+        fn spawn_publishes_then_joins_on_drop() {
+            let cfg = EngineConfig {
+                interval: Duration::from_millis(1),
+                history: Duration::from_secs(1),
+            };
+            let handle = spawn(Box::new(StubCollector::default()), cfg, Box::new(|| {}))
+                .expect("spawn the engine thread");
+
+            // Bounded wait for the first published device — no fixed sleep, no flake.
+            let mut published = false;
+            for _ in 0..1000 {
+                if !handle.latest().devices.is_empty() {
+                    published = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(published, "engine should publish a device snapshot");
+            drop(handle); // must join cleanly (no hang)
+        }
+    }
 }
 
 #[cfg(test)]
