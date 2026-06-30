@@ -197,7 +197,7 @@ numbers for a script — both reading the identical `core`.
 
 - [x] **`core` model:** `DeviceSample { util, mem_used, mem_total, ts }` (unit newtypes — see `.rules`) and a
   fixed-capacity **ring-buffer** time series per device (bounded — a monitor never grows unboundedly).
-- [ ] **`collector` (NVML):** poll `nvmlDeviceGetUtilizationRates` + `nvmlDeviceGetMemoryInfo` on the
+- [x] **`collector` (NVML):** poll `nvmlDeviceGetUtilizationRates` + `nvmlDeviceGetMemoryInfo` on the
   engine's background loop (default ~1 Hz). Mock collector emits a synthetic signal so every surface is
   identical with no GPU.
 - [ ] **GUI:** one panel — a number + a live sparkline bound to the ring buffer; redraw on new data,

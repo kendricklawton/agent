@@ -3,9 +3,10 @@
 //! is added in Phase 10.
 //!
 //! The app picks a [`Collector`] and hands it to a frontend; the frontends never touch a data source
-//! themselves (see ARCHITECTURE.md). Today everything runs on the mock source; NVML selection lands in Phase 1.
+//! themselves (see ARCHITECTURE.md). The default source is NVML, falling back to the mock when no GPU is
+//! present (`--mock` / `AGENT_SOURCE` override).
 
-use agent_collector::MockCollector;
+use agent_collector::{MockCollector, NvmlCollector};
 use agent_core::Collector;
 use clap::{Parser, Subcommand};
 
@@ -19,7 +20,7 @@ struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
 
-    /// Use the synthetic mock source (no GPU needed). Honored once NVML selection lands in Phase 1.
+    /// Use the synthetic mock source (no GPU needed); overrides the default NVML source.
     #[arg(long, global = true)]
     mock: bool,
 }
@@ -40,14 +41,52 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    // Phase 1 selects NVML when present and falls back to mock; today the mock is the only source.
-    let _ = cli.mock;
-    let mut collector: Box<dyn Collector> = Box::new(MockCollector::new(2));
+    let source = resolve_source(cli.mock, std::env::var("AGENT_SOURCE").ok());
+    let mut collector = build_collector(source)?;
 
     match cli.cmd.unwrap_or_else(default_cmd) {
         Cmd::Gui => agent_ui::run(collector),
         Cmd::Top => agent_cli::top(collector),
         Cmd::Ps { json } => agent_cli::ps(collector.as_mut(), json),
+    }
+}
+
+/// Which data source to read. `Nvml { required }` distinguishes an explicit request (error if absent)
+/// from the default (fall back to the mock if there's no GPU).
+enum Source {
+    Mock,
+    Nvml { required: bool },
+}
+
+/// Resolve the source: flags > `AGENT_*` env > default. A minimal slice of §0.5's config precedence; the
+/// full `Config` lands with the engine.
+fn resolve_source(mock_flag: bool, env: Option<String>) -> Source {
+    if mock_flag {
+        return Source::Mock;
+    }
+    match env.as_deref() {
+        Some("mock") => Source::Mock,
+        Some("nvml") => Source::Nvml { required: true },
+        _ => Source::Nvml { required: false },
+    }
+}
+
+/// Build the selected collector. The default tries NVML and falls back to the (self-labelled) mock with a
+/// notice on a GPU-less host; `AGENT_SOURCE=nvml` makes NVML mandatory.
+fn build_collector(source: Source) -> anyhow::Result<Box<dyn Collector>> {
+    match source {
+        Source::Mock => Ok(Box::new(MockCollector::new(2))),
+        Source::Nvml { required } => match NvmlCollector::new() {
+            Ok(c) => Ok(Box::new(c)),
+            Err(e) if required => Err(anyhow::anyhow!("NVML required but unavailable: {e}")),
+            Err(e) => {
+                eprintln!(
+                    "agent: no NVIDIA GPU detected ({e}) — using the synthetic mock source \
+                     (run with --mock to silence this, or AGENT_SOURCE=nvml to require NVML)"
+                );
+                Ok(Box::new(MockCollector::new(2)))
+            }
+        },
     }
 }
 
@@ -74,4 +113,36 @@ fn has_display() -> bool {
 #[cfg(not(all(unix, not(target_os = "macos"))))]
 fn has_display() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_precedence_flag_beats_env_beats_default() {
+        // The --mock flag wins over everything, including AGENT_SOURCE=nvml.
+        assert!(matches!(
+            resolve_source(true, Some("nvml".into())),
+            Source::Mock
+        ));
+        // Env selects explicitly.
+        assert!(matches!(
+            resolve_source(false, Some("mock".into())),
+            Source::Mock
+        ));
+        assert!(matches!(
+            resolve_source(false, Some("nvml".into())),
+            Source::Nvml { required: true }
+        ));
+        // Default (no flag, no/unknown env) is NVML, not required (so it can fall back to the mock).
+        assert!(matches!(
+            resolve_source(false, None),
+            Source::Nvml { required: false }
+        ));
+        assert!(matches!(
+            resolve_source(false, Some("other".into())),
+            Source::Nvml { required: false }
+        ));
+    }
 }
