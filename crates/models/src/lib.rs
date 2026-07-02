@@ -1,13 +1,15 @@
 //! `agent-models` — LLM adapters behind [`agent_core::Model`].
 //!
-//! [`MockModel`] is a deterministic, keyless stand-in for a real LLM (Claude/OpenAI adapters land next):
-//! it parses a question into a [`Plan`] with plain rules, so the whole engine runs and tests offline. The
-//! parsing helpers are pure, so they're unit-tested without any model.
+//! [`MockModel`] is a deterministic, keyless stand-in for a real LLM (Claude/OpenAI/Gemini adapters land
+//! next): it drives the same **tool-use loop** a real model does — parse the question into a `query` tool
+//! call, then ground the answer on the value the engine feeds back — using plain rules, so the whole engine
+//! runs and tests offline. The parsing helpers are pure, so they're unit-tested without any model.
 
 #![forbid(unsafe_code)]
 
-use agent_core::{Bar, DataQuery, Metric, Model, ModelError, Plan};
+use agent_core::{Conversation, Metric, Model, ModelError, Step, ToolCall, ToolResult, ToolSpec};
 use async_trait::async_trait;
+use serde_json::{Value, json};
 
 /// Default lookback when the question doesn't specify one.
 const DEFAULT_DAYS: u32 = 7;
@@ -22,28 +24,70 @@ impl Model for MockModel {
         "mock"
     }
 
-    async fn plan(&mut self, question: &str) -> Result<Plan, ModelError> {
+    async fn respond(
+        &mut self,
+        conversation: &Conversation,
+        _tools: &[ToolSpec],
+    ) -> Result<Step, ModelError> {
+        // If the engine has already run the query and fed the result back, ground the final answer on it.
+        if let Some(result) = last_tool_result(conversation) {
+            return Ok(Step::Done(compose_answer(&result.output)?));
+        }
+        // Otherwise this is the first turn: parse the question into a `query` tool call.
+        let question = question_text(conversation).unwrap_or_default();
         let symbol = extract_symbol(question).ok_or_else(|| {
             ModelError::Failed("no ticker (an UPPERCASE symbol) found in the question".to_owned())
         })?;
         let metric = extract_metric(question);
         let last_days = extract_days(question).unwrap_or(DEFAULT_DAYS);
-        Ok(Plan::new(DataQuery::new(symbol, last_days), metric))
+        Ok(Step::UseTools(vec![ToolCall::new(
+            "mock-1",
+            "query",
+            json!({ "symbol": symbol, "last_days": last_days, "metric": metric }),
+        )]))
     }
+}
 
-    async fn answer(
-        &mut self,
-        _question: &str,
-        metric: Metric,
-        value: f64,
-        bars: &[Bar],
-    ) -> Result<String, ModelError> {
-        Ok(format!(
-            "The {} was {value:.2} over the last {} bar(s) (source: mock).",
-            metric.label(),
-            bars.len(),
-        ))
-    }
+/// The most recent tool result the engine fed back, if any.
+fn last_tool_result(conversation: &Conversation) -> Option<&ToolResult> {
+    conversation.messages().iter().rev().find_map(|m| {
+        m.content.iter().rev().find_map(|b| match b {
+            agent_core::Block::ToolResult(tr) => Some(tr),
+            _ => None,
+        })
+    })
+}
+
+/// The first text block — the user's question.
+fn question_text(conversation: &Conversation) -> Option<&str> {
+    conversation.messages().iter().find_map(|m| {
+        m.content.iter().find_map(|b| match b {
+            agent_core::Block::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+    })
+}
+
+/// Ground a natural-language answer on the engine's `query` tool result (`{metric, value, bars_used}`).
+fn compose_answer(output: &Value) -> Result<String, ModelError> {
+    let missing = |field: &str| ModelError::Failed(format!("tool result missing `{field}`"));
+    let value = output
+        .get("value")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| missing("value"))?;
+    let bars_used = output
+        .get("bars_used")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| missing("bars_used"))?;
+    let metric: Metric = output
+        .get("metric")
+        .cloned()
+        .and_then(|m| serde_json::from_value(m).ok())
+        .ok_or_else(|| missing("metric"))?;
+    Ok(format!(
+        "The {} was {value:.2} over the last {bars_used} bar(s) (source: mock).",
+        metric.label(),
+    ))
 }
 
 /// First UPPERCASE alphabetic token of length 1–5 — a rough ticker match.
@@ -105,20 +149,57 @@ mod tests {
         assert_eq!(extract_days("last week"), None); // no "day"
     }
 
+    use agent_core::{Block, Message};
+
+    /// A conversation seeded with just the user's question.
+    fn asking(question: &str) -> Conversation {
+        let mut c = Conversation::new();
+        c.push(Message::user(vec![Block::Text(question.to_owned())]));
+        c
+    }
+
     #[tokio::test]
-    async fn plans_a_full_question() {
+    async fn first_turn_emits_a_query_tool_call() {
         let mut m = MockModel;
-        let plan = m
-            .plan("average close of FOO over the last 3 days")
+        let step = m
+            .respond(&asking("average close of FOO over the last 3 days"), &[])
             .await
-            .expect("plan");
-        assert_eq!(plan.query, DataQuery::new("FOO", 3));
-        assert_eq!(plan.metric, Metric::AverageClose);
+            .expect("step");
+        let Step::UseTools(calls) = step else {
+            panic!("expected a tool call, got {step:?}");
+        };
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "query");
+        assert_eq!(calls[0].input["symbol"], "FOO");
+        assert_eq!(calls[0].input["last_days"], 3);
+        assert_eq!(calls[0].input["metric"], "average_close");
     }
 
     #[tokio::test]
     async fn errors_without_a_ticker() {
         let mut m = MockModel;
-        assert!(m.plan("what is the weather today").await.is_err());
+        assert!(
+            m.respond(&asking("what is the weather today"), &[])
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn grounds_the_answer_on_a_tool_result() {
+        let mut c = asking("average close of FOO over the last 3 days");
+        // Simulate the engine having run the query and fed the result back.
+        c.push(Message::user(vec![Block::ToolResult(ToolResult::new(
+            "mock-1",
+            json!({ "metric": "average_close", "value": 101.0, "bars_used": 3 }),
+        ))]));
+        let step = MockModel.respond(&c, &[]).await.expect("step");
+        let Step::Done(text) = step else {
+            panic!("expected a final answer, got {step:?}");
+        };
+        assert_eq!(
+            text,
+            "The average close was 101.00 over the last 3 bar(s) (source: mock)."
+        );
     }
 }

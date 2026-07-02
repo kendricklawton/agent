@@ -81,12 +81,14 @@ have to be retrofitted through the SDK and API later.
 - [x] Make the seams **async** (`tokio`), object-safe via **`async-trait`** (the engine holds
   `Box<dyn Model>`/`Box<dyn DataProvider>` for runtime adapter selection); `Engine::ask` is `async`. Gate
   green, wire contract unchanged.
-- [ ] Reshape `Model` around a **tool-use loop** (the engine is the tool executor), replacing the split
-  `plan()`/`answer()` — matches the Messages API and generalizes to multi-turn. **`Engine::ask` returns an
-  answer stream** here (built once, on the loop's final shape — not on the soon-deleted `plan`/`answer`).
+- [x] Reshape `Model` around a **tool-use loop** — `respond(conversation, tools) -> Step`; the engine runs a
+  single `query` tool (fetch + `compute`) so grounding is structural. Replaces `plan()`/`answer()`; tool
+  calls are JSON (`ToolCall`/`ToolResult`), a step budget + ungrounded-answer guard enforce termination and
+  honesty. Surfaces + wire contract unchanged, gate green.
 - [ ] **12-factor config** (§0.6): a layered `Config` (flags > env > file > defaults); structured `tracing`
   logs to stderr; stdout reserved for output.
-- [ ] Mock adapters + CLI updated to stream; gate stays green, still keyless.
+- [ ] **Streaming**: `Engine::ask` returns an answer stream (`Step::Done` → token deltas on the loop above);
+  mock adapters + CLI render tokens live. Gate stays green, still keyless.
 
 ## Phase 3 — Real LLM adapters (Claude · OpenAI · Gemini) ⭐ + evals in-phase
 Three real LLMs at launch, not one — the true test that the tool-use loop seam is right **before** it freezes.

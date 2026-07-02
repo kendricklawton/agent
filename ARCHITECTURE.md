@@ -67,13 +67,13 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
    committed `Cargo.lock` (`--locked`), checksums, generates an SBOM, and **keyless-signs** (sigstore
    `cosign` over GitHub OIDC — no long-lived key), then verifies before publishing. *Why:* exercise the
    whole packaging/signing path before there's anything to ship.
-10. **One tool-use loop, not a split `plan`/`answer`; the provider is a tool the engine runs.** The `Model`
-    seam collapses to a single `respond(conversation, tools) -> Step` step (Phase 2): each turn the model
-    either asks to run tools (`Step::UseTools`) or emits its final answer (`Step::Done`) — the same shape as
-    the real Messages API. "Planning" is just the model choosing to call `fetch_bars`; the split
+10. **One tool-use loop, not a split `plan`/`answer`; the provider is a tool the engine runs.** *(Landed,
+    Phase 2.)* The `Model` seam collapses to a single `respond(conversation, tools) -> Step` step: each turn
+    the model either asks to run tools (`Step::UseTools`) or emits its final answer (`Step::Done`) — the same
+    shape as the real Messages API. "Planning" is just the model choosing to call the `query` tool; the split
     `plan()`/`answer()` methods disappear. Crucially the **engine runs the tools, not the LLM**: the model
-    can *ask* for bars and *ask* for a metric, but the `DataProvider` fetch and the `compute()` arithmetic
-    are executed by the engine and fed back as trustworthy tool results. *Why:* (a) it preserves
+    asks for a metric over a ticker's bars, but the `DataProvider` fetch and the `compute()` arithmetic are
+    executed by the engine and fed back as a trustworthy tool result. *Why:* (a) it preserves
     **grounded-not-advice** — the LLM never does the math or invents a number; (b) a turn becomes a
     *sequence of messages*, so a `Conversation` is the unit of work and **multi-turn + session-resume**
     (Phase 5) fall out for free — the conversation serializes to JSONL, no database; (c) it matches the
@@ -88,8 +88,14 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
       backing services) and native `async fn` in traits isn't `dyn`-compatible. *Rejected:* generic
       `Engine<M, P>` + native async fn (kills runtime selection); hand-rolled `Pin<Box<dyn Future>>` (more
       boilerplate, no benefit — the per-call box is negligible next to an HTTP round-trip). The async
-      substrate landed **before** this loop reshape so the two hard changes stay independently bisectable;
-      streaming lands *with* the loop, built once on its final shape.
+      substrate landed **before** this loop reshape so the two hard changes stay independently bisectable.
+    - *Loop, as shipped (Phase 2):* **JSON-valued tool calls** (`ToolCall { id, name, input: Value }` /
+      `ToolResult`), not a typed enum — the exact shape Claude/OpenAI/Gemini `tool_use` blocks parse into, so
+      the frozen seam survives richer tools. **One `query` tool** now (fetch + `compute`, atomic and
+      grounded); granular fetch/compute tools come with the Phase-9 query model. A **step budget** and an
+      **ungrounded-answer guard** (a `Done` with no executed `query` is refused) enforce termination and
+      honesty. `Engine::ask` still returns `Answer`; **streaming is the next Phase-2 step**, built once on
+      this loop's `Step::Done`.
 
 ## Platform & trust surface
 
