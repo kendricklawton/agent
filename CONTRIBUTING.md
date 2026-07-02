@@ -7,6 +7,10 @@ ask a question in plain English and get an answer grounded in real data, by plug
 > Read [**`.rules`**](./.rules) first — the single source of truth for build commands and the invariants
 > that must never be traded away (`CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` all point there). The design is
 > in [**`ARCHITECTURE.md`**](./ARCHITECTURE.md); the staged plan in [**`ROADMAP.md`**](./ROADMAP.md).
+>
+> **New to the domain or the stack?** [`LEARN-PRODUCT.md`](./LEARN-PRODUCT.md) is a guided path through the
+> financial instruments the engine serves; [`LEARN-TECHNICAL.md`](./LEARN-TECHNICAL.md) maps the Rust / LLM /
+> systems skills to this codebase.
 
 ## Prerequisites
 
@@ -86,7 +90,7 @@ tool, not financial advice, and it never fabricates numbers — keep it that way
 
 ## Phases & decisions
 
-Work is organized into phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release (see
+Work is organized into phases (Phase 0 → Phase 14) that ladder to the `v0.1.0` release at Phase 14 (see
 [`ROADMAP.md`](./ROADMAP.md)). Each phase closes with a **git tag + a working demo + green CI**, and isn't
 started until the prior is green. Record any significant, hard-to-reverse decision in
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions) so the *why* outlives the diff.

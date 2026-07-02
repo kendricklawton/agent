@@ -1,4 +1,4 @@
-//! `agent-cli` — the terminal frontend: the one-shot `ask` command. A pure view of the engine's
+//! `agent-cli` — the terminal surface: the one-shot `ask` command. A pure view of the engine's
 //! [`Answer`](agent_core::Answer) — it never calls a model or a data provider directly.
 
 #![forbid(unsafe_code)]

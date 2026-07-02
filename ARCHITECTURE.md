@@ -8,8 +8,8 @@ the build commands + invariants in [`.rules`](./.rules); how to build and contri
 
 This is **ports & adapters** (hexagonal architecture). A headless **engine** (`core`) answers questions by
 driving two *ports* — a [`Model`] (an LLM) and a [`DataProvider`] (a data source) — and every **surface**
-(the CLI now, an API later) only *renders* the engine's answer. No surface calls an LLM or a data provider
-directly. The **canonical schema** in the middle is a Domain-Driven-Design *anti-corruption layer*: every
+(the CLI and the Python SDK now, an API later) only *renders* the engine's answer. No surface calls an LLM
+or a data provider directly. The **canonical schema** in the middle is a Domain-Driven-Design *anti-corruption layer*: every
 provider maps its raw API onto it, so a provider's wire format — and its API drift — never leaks inward.
 
 ```
@@ -67,6 +67,22 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
    committed `Cargo.lock` (`--locked`), checksums, generates an SBOM, and **keyless-signs** (sigstore
    `cosign` over GitHub OIDC — no long-lived key), then verifies before publishing. *Why:* exercise the
    whole packaging/signing path before there's anything to ship.
+10. **One tool-use loop, not a split `plan`/`answer`; the provider is a tool the engine runs.** The `Model`
+    seam collapses to a single `respond(conversation, tools) -> Step` step (Phase 2): each turn the model
+    either asks to run tools (`Step::UseTools`) or emits its final answer (`Step::Done`) — the same shape as
+    the real Messages API. "Planning" is just the model choosing to call `fetch_bars`; the split
+    `plan()`/`answer()` methods disappear. Crucially the **engine runs the tools, not the LLM**: the model
+    can *ask* for bars and *ask* for a metric, but the `DataProvider` fetch and the `compute()` arithmetic
+    are executed by the engine and fed back as trustworthy tool results. *Why:* (a) it preserves
+    **grounded-not-advice** — the LLM never does the math or invents a number; (b) a turn becomes a
+    *sequence of messages*, so a `Conversation` is the unit of work and **multi-turn + session-resume**
+    (Phase 5) fall out for free — the conversation serializes to JSONL, no database; (c) it matches the
+    provider tool-calling contract, so the Claude adapter (Phase 3) wraps it directly. *Cost:* the seam
+    signatures change from `question: &str` to a `Conversation` — a breaking reshape done deliberately while
+    **mock-only and pre-freeze**, because doing it after a live adapter is far more expensive. *Rejected:*
+    keeping `plan`/`answer` (can't express tool loops or multi-turn) and letting the LLM compute (breaks
+    grounding). Streaming (`Step::Done` as a token delta stream) and the async boxing strategy for
+    `Box<dyn Model>` layer on top of this same loop — see the async + streaming invariant.
 
 ## Platform & trust surface
 

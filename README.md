@@ -4,9 +4,9 @@
 in **any LLM** and **any data provider** and query them together — you bring the APIs, the engine makes
 them speak the same language and answers with real, cited data.
 
-> **Status:** early, in active development — pivoting an earlier codebase into this engine. There's no
-> published binary yet; build from source ([`CONTRIBUTING.md`](./CONTRIBUTING.md)). The repo is still named
-> `agent` pending a rename.
+> **Status:** early, in active development. The engine + mock adapters work today (keyless); the real
+> Claude + Polygon adapters are next. No published binary yet — build from source
+> ([`CONTRIBUTING.md`](./CONTRIBUTING.md)). The repo is still named `agent` pending a rename.
 
 ## Why
 Every "ask-your-data" tool is welded to one model and one data source. Swap the LLM or the data provider and

@@ -1,97 +1,83 @@
-# .rules — a natural-language data query engine (OSS)
+# .rules — modular natural-language data query engine (Rust, Apache-2.0)
 
-> **Single source of truth for this repo — read this first.** Humans and AI assistants (Claude, Gemini,
-> Codex, …) follow it; `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` all point here. Keep it **concise and
-> current**: the *plan* lives in [`ROADMAP.md`](./ROADMAP.md), the *why* in
-> [`ARCHITECTURE.md`](./ARCHITECTURE.md), the *how-to* in [`CONTRIBUTING.md`](./CONTRIBUTING.md). Don't duplicate them here.
+> **Read this first — the one source of truth for how we build here.** `AGENTS.md`, `CLAUDE.md`, and
+> `GEMINI.md` all point at this file. Keep it short: the *plan* is [`ROADMAP.md`](./ROADMAP.md), the *why*
+> is [`ARCHITECTURE.md`](./ARCHITECTURE.md), the *how-to* is [`CONTRIBUTING.md`](./CONTRIBUTING.md) — link
+> them, don't duplicate them.
 
-## What this repo is
-An **open-source, Apache-2.0**, **modular query engine** written in **Rust**: ask a question in **natural
-language** and get an answer **grounded in real data**, by plugging in **any LLM** (Claude, OpenAI, a local
-or custom model) and **any data provider** (Polygon for markets, a custom source; prediction markets like
-Kalshi later) behind two small traits. **Open-core:** the engine, the adapter SDK, and reference adapters
-are OSS; hosted / multi-source / team features are additive commercial layers, never bolted into the core.
-**Working name: TBD** (the repo is still named `agent`; the rename is an early task).
+## What it is
+Ask a question in plain English, get an answer **grounded in real data**. Plug in **any LLM** (the `Model`
+trait) and **any data provider** (the `DataProvider` trait); a **canonical schema** in the middle contains
+each provider's API drift. **Open-core:** the engine, the adapter SDK, and reference adapters are OSS;
+hosted / multi-source / team features are additive, never bolted into the core. (Repo is still named
+`agent`; the rename is an early task.)
 
-> **The one-liner:** *glue any model to any data source and query it in plain English* — you bring the
-> APIs, the engine makes them speak the same language.
-
-## The shape
-A natural-language question → the **`Model`** adapter (an LLM) turns it into a structured query → the
-**`DataProvider`** adapter fetches and returns data in the engine's **canonical schema** → the `Model`
-composes an answer grounded in that data. Every surface (CLI now, an API later) is a **pure view** of the
-engine; nothing downstream ever sees a provider's raw API shape.
-
-> **Status:** early. The engine's two seams (`Model` + `DataProvider`) and the **mock** adapters land
-> first, so everything builds, tests, and demos **with no API keys**; the real Claude + Polygon adapters
-> come next.
+**Flow:** question → `Model` plans a structured query → `DataProvider` returns canonical data → `Model`
+grounds the answer. Every surface (CLI, Python SDK, later API) is a **pure view** — none calls an LLM or a
+provider directly.
 
 ## Commands
 | Task | Command |
 |------|---------|
 | Build | `cargo build` |
 | Ask a question | `cargo run -p agent -- ask "…"` |
-| Run with **no API keys** (mock model + mock provider) | append `--mock` |
-| Machine output | `cargo run -p agent -- ask "…" --json` |
-| Full local gate before pushing | `cargo xtask ci` (fmt + clippy + build + test + feature powerset + deny) |
-| Test (offline, uses recorded fixtures) | `cargo test` |
+| No API keys (mock model + mock provider) | append `--mock` |
+| Machine output | append `--json` |
+| Test (offline, recorded fixtures) | `cargo test` |
+| **Local gate — run before every push** | `cargo xtask ci` (fmt + clippy + build + test + feature powerset + deny) |
 
-- **Stable Rust, one workspace.** Live model/provider calls hit HTTP APIs, but the **mock** adapters mean
-  every command works offline with no keys and no network.
+Stable Rust, one workspace. Live calls hit HTTP APIs; the **mock** adapters keep every command offline with
+no keys.
 
-## Stack & layout
-- **Rust** (stable). **LLMs:** provider HTTP APIs (**Claude first**). **Data:** provider HTTP APIs
-  (**Polygon first**). Adapters are `reqwest`-based and feature-gated.
+## Layout
 ```
-crates/core       the engine: canonical schema, the Model + DataProvider traits, the NL→query→answer flow
-crates/models     LLM adapters: claude, (openai/local later), mock
-crates/providers  data adapters: polygon, (kalshi/custom later), mock
-crates/cli        terminal frontend (lib): `ask` (+ `--json`)
-crates/app        the single binary: subcommand dispatch, wires model + provider → core → surface
-xtask             build/dev orchestration (dev-only, never shipped)
+crates/core       engine: canonical schema, the Model + DataProvider traits, the NL→query→answer flow
+crates/models     LLM adapters: mock now; claude, then openai/local
+crates/providers  data adapters: mock now; polygon, then kalshi/custom
+crates/cli        terminal surface (lib): ask (+ --json)
+crates/app        the binary: subcommand dispatch, wires model + provider → engine
+xtask             dev/build orchestration (never shipped)
 ```
 
-## Invariants — do not trade these away
+## Invariants — never trade these away
 The *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
-- **Headless engine; every surface is a pure view.** The CLI (and any future API) only render the engine's
-  output — they never call an LLM or a data provider directly.
-- **Two trait seams — `Model` and `DataProvider`.** A new LLM or a new data source is a **new adapter and
-  nothing else**. The core depends on neither a specific model nor a specific provider.
-- **A canonical, versioned schema defeats API drift.** Providers map their raw API → the engine's canonical
-  types; the engine and the LLM only ever see canonical data. A provider's breaking change is contained to
-  *its* adapter — never leaks into the core or a surface.
-- **Adapters declare capabilities.** Each adapter states what it can serve (which data kinds, which
-  operations), so the engine only plans queries a provider can actually answer.
-- **Drift is caught in CI, not in prod.** Every adapter has **golden/contract tests over recorded
-  fixtures** (deterministic, offline); a provider or LLM contract change fails CI.
-- **Grounded, not advice.** The engine answers from returned data and cites what it used; it is a
-  **research/analysis** tool, **not financial advice**. No fabricated numbers.
-- **Keyless by default.** The permanent **mock** model + mock provider make the whole thing build, test,
-  and demo with no API keys — a permanent, first-class pair of adapters.
-- **The CLI/API is a contract.** `ask --json` has stable field names + exit codes — additive changes only,
-  golden-tested.
+- **Headless engine, pure-view surfaces.** CLI, SDK, and API only render the engine's `Answer`, never call
+  an LLM/provider directly, and share **one wire contract** — stable field names + exit codes, additive
+  changes only, golden-tested.
+- **Two seams — `Model` + `DataProvider`.** A new LLM or source is a **new adapter and nothing else**; the
+  core depends on neither a specific model nor a specific provider.
+- **CLI and Python SDK at parity.** Every engine capability is reachable from both — never CLI-only or
+  SDK-only.
+- **Async + streaming.** The traits are `async` (`tokio`); answers **stream** token-by-token to every
+  surface.
+- **Canonical schema defeats drift.** Providers map their raw API → canonical types; the engine and the LLM
+  never see raw. A provider's breaking change stays inside its adapter.
+- **Capabilities declared; drift caught in CI.** Each adapter states what it can serve, and has
+  **golden/contract tests over recorded fixtures** — a provider/LLM contract change fails CI, not prod.
+- **Grounded, not advice.** Answers come from fetched data and cite what they used. A **research** tool, not
+  financial advice — never fabricate a number.
+- **Keyless by default.** The permanent **mock** model + provider build, test, and demo the whole thing
+  with no keys — first-class adapters, not throwaways.
+- **12-factor config & logs.** Config is layered **flags > env > file > defaults**; secrets come from env
+  only; `tracing` logs go to **stderr** (stdout is for output).
 
-## Code conventions
-- `cargo fmt` + `cargo clippy` clean. **No `unwrap`/`expect`/`panic!` outside tests** (workspace `deny`
-  lints; `clippy.toml` re-allows them in tests). Stable Rust, `std`.
-- **Error model:** `thiserror` in the library crates (`core`/`models`/`providers`), `anyhow` only at the
-  `app` boundary. Errors are values; a failed model/provider call degrades to a clear error, never a panic.
-- **`unsafe`:** `#![forbid(unsafe_code)]` across the workspace (no FFI here — everything is HTTP + serde).
-- **Type the domain:** newtypes and typed canonical schema for entities (instruments, quotes, bars, events,
-  …) — never bare strings/floats across the trait boundary. `#[non_exhaustive]` on public types so the
-  schema and the wire contract evolve additively.
-- **Secrets:** API keys come from **env/config only** — never committed, never logged, never in fixtures.
-- **Feature flags:** each real adapter (claude, polygon, …) lives behind a cargo feature; CI builds the
-  default set, `--no-default-features`, and the feature powerset.
-- **MSRV is pinned** (`rust-version`) and CI-guarded.
+## Conventions
+- `cargo fmt` + `cargo clippy` clean. Stable Rust, `std`.
+- **No `unwrap`/`expect`/`panic!` outside tests** (workspace `deny`; re-allowed in tests via `clippy.toml`).
+  A failed model/provider call is an `Err` value that degrades to a clear message — never a panic.
+- **Errors:** `thiserror` in the libs (`core`/`models`/`providers`), `anyhow` only at the `app` boundary.
+- `#![forbid(unsafe_code)]` workspace-wide (HTTP + serde only — no FFI).
+- **Type the domain:** newtypes + the canonical schema, never bare strings/floats across a trait boundary.
+  `#[non_exhaustive]` on public types so the schema and wire contract evolve additively.
+- **Secrets from env/config only** — never committed, logged, or put in a fixture.
+- Each real adapter lives behind a cargo feature; CI builds the default set, `--no-default-features`, and
+  the powerset. **MSRV is pinned** (`rust-version`) and CI-guarded.
 
-## Repo etiquette
-- Commits: one logical change each, imperative subject. **Never add AI co-author / attribution trailers.**
-  **Never commit secrets or fetched/generated data** (recorded fixtures are curated + license-checked).
-- Work in phases (Phase 0 → …) that ladder to `v0.1.0`. Close each with a tag + a working demo + green CI.
-  Record significant, hard-to-reverse decisions in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+## Etiquette
+- One logical change per commit, imperative subject. **Never add AI co-author / attribution trailers.**
+  **Never commit secrets or fetched/generated data.**
+- Work in phases that ladder to `v0.1.0`; close each with a **tag + working demo + green CI**. Record
+  hard-to-reverse decisions in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
-## Cross-refs
-- The plan & phases: [`ROADMAP.md`](./ROADMAP.md) — authoritative.
-- Design & decisions: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Contributor setup: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-- Security: [`SECURITY.md`](./SECURITY.md) · License: **Apache-2.0** ([`LICENSE`](./LICENSE))
+## More
+[`ROADMAP.md`](./ROADMAP.md) plan · [`ARCHITECTURE.md`](./ARCHITECTURE.md) design · [`CONTRIBUTING.md`](./CONTRIBUTING.md) setup · [`SECURITY.md`](./SECURITY.md) · Apache-2.0 ([`LICENSE`](./LICENSE))

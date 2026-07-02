@@ -1,144 +1,187 @@
 # Roadmap — a natural-language data query engine (Rust): pluggable LLM + data provider
 
 Ask a question in plain English, get an answer grounded in real data — by plugging in any LLM and any data
-source behind two small traits. This is the staged plan; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md),
-the invariants in [`.rules`](./.rules), the how-to in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+source behind two small traits. Two first-class surfaces read the engine at parity: a **Claude-Code-grade
+CLI** and a **native Python SDK**. This is the staged plan; the *why* is in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md), the invariants in [`.rules`](./.rules), the how-to in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 ## §0 The spine
-The whole engine is one loop across two ports:
+The whole engine is one **async, streaming** loop across two ports:
 
-**question → `Model` plans a structured query → `DataProvider` returns canonical data → engine computes the
-metric → `Model` composes a grounded answer.**
+**question → `Model` runs a tool-use loop (plans a query, the engine executes it against the
+`DataProvider`, canonical data comes back) → `Model` streams a grounded answer.**
 
-- **`Model`** (an LLM adapter): NL → a structured [`Plan`]; then compose a grounded answer. Claude first;
-  OpenAI/local next.
+- **`Model`** (an LLM adapter): drives a **tool-use loop** — it calls the engine's query tool, receives
+  canonical data, and **streams** a grounded answer. Claude first; OpenAI/local next.
 - **`DataProvider`** (a data adapter): declares its capabilities, returns data in the **canonical schema**.
   Polygon first; Kalshi/prediction-markets and custom sources next.
-- **The engine** owns the flow and the one piece of real arithmetic (`compute`). Every surface (CLI now,
-  API later) is a pure view of the resulting `Answer`.
+- **The engine** owns the loop, executes the query tool (the deterministic `compute`), and publishes an
+  `Answer` (+ a token stream). Every surface — **CLI**, **Python SDK**, and the later **API** — is a pure
+  view of the same engine.
 
 ## §0.5 The engineering contract (what every phase leans on)
 1. **Ports & adapters.** A new model or source is a new adapter and nothing else; the core depends on
    neither. Adapters are feature-gated.
-2. **Canonical schema = anti-corruption layer.** Providers map raw API → canonical; the engine never sees
-   raw. This is what contains provider **API drift**.
-3. **Drift caught in CI.** Every adapter has **contract tests over recorded fixtures** (deterministic,
+2. **Async + streaming.** The seams are `async` (`tokio`); object-safe via boxed futures/streams. Answers
+   **stream** token-by-token to every surface — the difference between "feels like Claude" and a spinner.
+3. **Canonical schema = anti-corruption layer.** Providers map raw API → canonical; the engine never sees
+   raw. This contains provider **API drift**. Prices are a **decimal** type, timestamps are UTC.
+4. **Drift caught in CI.** Every adapter has **contract tests over recorded fixtures** (deterministic,
    offline). A provider/LLM contract change fails CI, not production.
-4. **Capabilities.** Adapters declare what they can serve; the engine only plans answerable queries.
-5. **Grounded, not advice.** Answer from fetched data, report provenance, never invent a number. Research/
-   analysis tool, **not** financial advice.
-6. **Wire contract.** `ask --json` (and the later API) have stable field names + exit codes — additive
-   changes only, golden-tested.
-7. **Keyless by default.** A permanent mock model + mock provider → build/test/demo with no keys; the basis
+5. **Grounded, not advice.** Answer from fetched data, report provenance, never invent a number; a
+   **grounding check** (did the answer use the data?) ships with the first real LLM, not at the end.
+   Research/analysis tool, **not** financial advice.
+6. **Two surfaces at parity.** Every engine capability is reachable from **both** the CLI and the Python
+   SDK — never a CLI-only or SDK-only feature. Both are pure views; the wire/API contract is the third.
+7. **Wire contract.** `ask --json`, the SDK types, and the later API share stable field names + exit codes —
+   additive changes only, golden-tested.
+8. **Keyless by default.** A permanent mock model + mock provider → build/test/demo with no keys; the basis
    for known-answer evals.
-8. **Secrets out of the repo.** API keys via env/config only; never committed, logged, or in fixtures.
 9. **No panics.** `unwrap`/`expect`/`panic!` denied outside tests; a failed model/provider call is a value.
 
+## §0.6 Twelve-factor mapping (how the engine stays operable)
+- **III Config in the environment.** Layered precedence: **flags > env (`AGENT_*`) > config file > defaults**.
+  API keys and model/provider selection are config, never code. **VIII Secrets** never committed/logged.
+- **IV Backing services as attached resources.** The LLM and the data source *are* backing services — the
+  adapters. Swap Claude→OpenAI or Polygon→another by config, no code change.
+- **VI Stateless processes.** Conversation/session state lives in a **store** (disk locally, a backing store
+  for the server), not process memory — so the API scales horizontally.
+- **X Dev/prod parity.** The **mock** adapters keep dev ≈ prod: same engine, same code path, keyless.
+- **XI Logs as event streams.** Structured logging via `tracing` to **stderr** (never a log file); stdout is
+  reserved for the answer / `--json`. **XII Admin tasks** are `xtask` subcommands (e.g. fixture capture).
+- **VII Port binding · IX Disposability.** The server (Phase 12) binds a port, starts fast, shuts down
+  gracefully.
+
 ## Phase index
-0. Scaffold, CI & release pipeline · 1. Engine skeleton + mock vertical slice · 2. Real LLM (Claude) ·
-3. Real data provider (Polygon) · 4. Drift defense (fixtures + contract tests) · 5. More adapters + config ·
-6. Richer queries & the formal wire contract · 7. Prediction markets (Kalshi) · 8. Caching & reliability ·
-9. Server/API surface (open-core boundary) · 10. Eval suite & quality budgets · 11. Packaging & release ·
-12. Python SDK (PyO3/maturin) — *after* the Rust `v0.1.0`.
+0. Scaffold, CI & release · 1. Engine skeleton + mock slice · 2. Async · streaming · config foundation ·
+3. Real LLM (Claude) + evals · 4. Real data (Polygon) + schema correctness · 5. Interactive CLI (the
+Claude-Code feel) · 6. Python SDK (first-class, co-shipped) · 7. Drift defense · 8. More adapters + config ·
+9. Richer queries & the computation model · 10. Prediction markets (Kalshi) · 11. Caching & reliability ·
+12. Server / API surface · 13. Eval suite & quality budgets · 14. Packaging & release — ships `v0.1.0`
+(binary **+ wheels**).
 
 ---
 
 ## Phase 0 — Scaffold, CI & release pipeline
 - [x] Cargo workspace + crate split (`core`/`models`/`providers`/`cli`/`app`/`xtask`).
-- [x] CI: fmt, clippy `-D warnings`, build, test, feature powerset (`cargo-hack`), supply chain (`cargo-deny`),
-  a single `ci-status` gate; local mirror via `cargo xtask ci`.
-- [x] Scheduled advisory audit; keyless-signed + SBOM'd release pipeline (tag-triggered).
+- [x] CI gate (fmt, clippy `-D warnings`, build, test, feature powerset, `cargo-deny`, `ci-status`); local
+  mirror via `cargo xtask ci`; scheduled advisory audit; keyless-signed + SBOM'd release pipeline.
 
 ## Phase 1 — Engine skeleton + mock vertical slice ⭐
-- [x] The two trait seams (`Model`, `DataProvider`) + the canonical schema (`Bar`, `DataQuery`, `Metric`,
-  `Answer`) + `Capabilities` + the pure `compute()`.
-- [x] `MockModel` (deterministic NL→`Plan`) + `MockProvider` (known price series).
-- [x] `agent ask "…" --mock` → grounded answer; `--json` wire output; clean error on no ticker.
-- [x] A **known-answer eval** test (avg close = 101.0). Everything builds/tests offline, gate green.
+- [x] The two trait seams + canonical schema (`Bar`/`DataQuery`/`Metric`/`Answer`) + `Capabilities` + pure
+  `compute()`; `MockModel` + `MockProvider`; `agent ask --mock` (+ `--json`); a known-answer eval. Green.
 
-## Phase 2 — Real LLM adapter (Claude) ⭐
-- [ ] A `claude` `Model` adapter (`reqwest`; API key from env) using **tool-calling / structured output** to
-  turn NL into a `Plan`, then compose a grounded answer from the computed value + data.
-- [ ] Handle rate limits, timeouts, and failures as values (no panics); redact keys from logs/errors.
-- [ ] Contract tests over **recorded fixtures** so the adapter is testable with no key/network.
-- [ ] Extend the known-answer evals to cover the real plan→answer path (recorded).
+## Phase 2 — Async · streaming · config foundation ⭐ (architecture hardening — before any real I/O)
+Do the irreversible shape decisions *before* the first HTTP adapter, so streaming, async, and config don't
+have to be retrofitted through the SDK and API later.
+- [ ] Make the seams **async** (`tokio`), object-safe (boxed futures/streams or `async-trait`); `Engine::ask`
+  returns an **answer stream** + the final `Answer`.
+- [ ] Reshape `Model` around a **tool-use loop** (the engine is the tool executor), replacing the split
+  `plan()`/`answer()` — matches the Messages API and generalizes to multi-turn.
+- [ ] **12-factor config** (§0.6): a layered `Config` (flags > env > file > defaults); structured `tracing`
+  logs to stderr; stdout reserved for output.
+- [ ] Mock adapters + CLI updated to stream; gate stays green, still keyless.
 
-## Phase 3 — Real data provider (Polygon)
-- [ ] A `polygon` `DataProvider` (`reqwest`; key from env) that maps raw aggregates → canonical `Bar`
-  (handle adjusted-vs-unadjusted explicitly), with a `Capabilities` descriptor.
-- [ ] Pagination, rate limits, retries with backoff; recorded-fixture contract tests.
-- [ ] `agent ask "…"` end-to-end against real Claude + Polygon (opt-in, needs keys).
+## Phase 3 — Real LLM adapter (Claude) ⭐ + evals in-phase
+- [ ] A `claude` `Model` adapter (`reqwest`, streaming, tool-use; key from `AGENT_*` env). Rate limits,
+  timeouts, failures as values; keys redacted from logs/errors.
+- [ ] Contract tests over **recorded fixtures** (offline) **and** a **grounding check** — assert the answer
+  actually used the fetched data — so hallucination is caught from day one, not at Phase 13.
+- [ ] Known-answer evals extended to the real streamed tool-use path (recorded).
 
-## Phase 4 — Drift defense
-- [ ] A record/replay ("VCR") harness: capture a real response once, replay offline; drift shows as a diff
-  and **fails CI**.
+## Phase 4 — Real data provider (Polygon) + schema correctness
+- [ ] A `polygon` `DataProvider` (`reqwest`; key from env) mapping raw aggregates → canonical `Bar`.
+- [ ] **Get the data correct** (the #1 bug class — see LEARN-PRODUCT.md): **decimal** prices, explicit
+  **adjusted-vs-unadjusted**, symbology, trading-calendar/timezone handling; a `Capabilities` descriptor.
+- [ ] Pagination, retries with backoff; recorded-fixture contract tests; real end-to-end (opt-in, needs keys).
+
+## Phase 5 — Interactive CLI: the Claude-Code feel ⭐
+Not one-shot `ask` bolted on — a first-class interactive experience.
+- [ ] `agent chat` — a **streaming REPL** over a bounded, multi-turn `Conversation` (each turn keeps the
+  question + grounded answer + data used); follow-ups resolve against prior turns.
+- [ ] **TTY-aware rendering** (rich/colored interactive; plain/`--json` when piped — like `claude -p`);
+  status while fetching/reasoning; **sessions** persisted + resumable (`--continue`/`--resume`, `--list`).
+- [ ] In-REPL **slash commands** (`/help`, `/model`, `/clear`, …); actionable errors + exit codes; a
+  `config` command. `ask` remains the scriptable one-shot form.
+
+## Phase 6 — Python SDK: first-class, co-shipped ⭐
+The adoption surface for the data/quant/ML audience — introduced now (engine is real + streaming), then held
+at **CLI↔SDK parity** (§0.5-6) forever after; ships with `v0.1.0`, not after.
+- [ ] A `crates/py` binding (PyO3, `abi3` → one wheel across versions) wrapping `Engine`: typed `Answer`,
+  errors → Python exceptions, and **async + streaming** exposed Pythonically (async iteration over tokens).
+- [ ] `maturin` + `pyproject.toml`; a **separate CI job** builds/tests the wheel (the pure-Rust gate excludes
+  the py crate via `extension-module` feature-gating, staying green + keyless).
+- [ ] Python smoke + contract tests mirroring the CLI's; promotes `Engine`/`Answer` to a committed,
+  SemVer-tracked surface (recorded in ARCHITECTURE).
+
+## Phase 7 — Drift defense
+- [ ] A record/replay ("VCR") harness (`xtask` fixture capture); drift shows as a diff and **fails CI**.
 - [ ] Capability negotiation: the engine declines (clearly) queries a provider can't serve.
-- [ ] Canonical **schema versioning** + additive-evolution rules; a golden for the `ask --json` shape.
+- [ ] Canonical **schema versioning** + additive-evolution rules; goldens for `ask --json` and the SDK types.
 
-## Phase 5 — More adapters + config/registry
-- [ ] A second model (OpenAI or a local model) and a second data provider — proving the seams generalize.
-- [ ] Select model + provider via config/flags/env; an adapter registry; feature-gate each real adapter.
+## Phase 8 — More adapters + config/registry
+- [ ] A second model (OpenAI/local) and a second data provider — proving the seams generalize.
+- [ ] Adapter registry; select model + provider via config (§0.6); feature-gate each real adapter.
 
-## Phase 6 — Richer queries & the formal wire contract
-- [ ] Grow the canonical schema + query shapes: date ranges, more metrics, option chains, fundamentals.
-- [ ] Formalize the wire contract (`schema_version`, `#[non_exhaustive]`, golden-tested) for `ask --json`.
+## Phase 9 — Richer queries & the computation model
+- [ ] **Decide the computation model** (the open-ended-question landmine): a small **query/expression DSL**
+  the LLM targets (composable metrics over the canonical schema), not an ever-growing `Metric` enum — or a
+  deliberately scoped set, stated plainly. This is what lets "ask anything" actually mean something.
+- [ ] Grow the schema + query shapes (ranges, option chains, fundamentals); formalize the wire contract.
 
-## Phase 7 — Prediction markets (Kalshi) ⭐ (the differentiator)
+## Phase 10 — Prediction markets (Kalshi) ⭐ (the differentiator)
 - [ ] An `Event`/`Market` canonical type with an **implied probability**; a Kalshi `DataProvider`.
-- [ ] The signature query: **LLM-estimated probability vs the market-implied probability**, with the
-  divergence surfaced and grounded.
+- [ ] The signature query: **LLM-estimated probability vs the market-implied probability**, grounded.
 
-## Phase 8 — Caching & reliability
-- [ ] Cache expensive provider/LLM calls (in-memory → pluggable); shared retry/timeout/rate-limit middleware.
-- [ ] Cost + latency budgets surfaced per answer.
+## Phase 11 — Caching & reliability
+- [ ] Cache expensive provider/LLM calls (a **backing service**, §0.6-IV; in-memory → pluggable); shared
+  retry/timeout/rate-limit middleware. Cost + latency budgets surfaced per answer.
+- [ ] **Respect data-source redistribution terms** in what the cache stores and what any surface re-emits.
 
-## Phase 9 — Server / API surface (the open-core boundary)
-- [ ] An HTTP API (`axum`) rendering the same engine — the boundary the commercial layer builds on.
-- [ ] AuthN/Z, config, graceful shutdown; strictly additive to the local CLI.
+## Phase 12 — Server / API surface (the open-core boundary)
+- [ ] An HTTP API (`axum`) rendering the same engine, with **streaming** (SSE) responses — CLI, SDK, and API
+  now three pure views. **Stateless** processes; sessions in a backing store (§0.6-VI); **port-bound**,
+  graceful shutdown (§0.6-VII/IX). AuthN/Z, config; strictly additive to the local CLI.
 
-## Phase 10 — Eval suite & quality
-- [ ] A broader **known-answer eval** suite + grounding checks (did the answer use the fetched data?).
-- [ ] Regression gates on answer correctness, cost, and latency.
+## Phase 13 — Eval suite & quality budgets
+- [ ] Broaden the known-answer + grounding evals into a suite; **regression gates** on answer correctness,
+  cost, and latency in CI.
 
-## Phase 11 — Packaging & release ⭐ (ships `v0.1.0`)
-- [ ] Packaging (Linux first), install docs, a demo, the `ask --json`/API contract reference.
-- [ ] Signed, reproducible release + checksums + SBOM (the Phase-0 pipeline, cutting a real tag).
-- [ ] Tag **`v0.1.0`** — the first public release.
-
-## Phase 12 — Python SDK (PyO3/maturin) — *after the Rust `v0.1.0` is done*
-The adoption surface for the data/quant/ML audience: `pip install`, `import`, in-process — the same
-Rust-core + native-binding pattern as `polars`/`pydantic-core`/`ruff`. Built **after** the Rust version so
-it binds a real engine, not a mock.
-- [ ] A `crates/py` binding (PyO3, `abi3` → one wheel across Python versions) wrapping `Engine`/`ask`, with
-  `Answer` exposed as a typed Python object and engine errors mapped to Python exceptions.
-- [ ] `maturin` build + `pyproject.toml`; a **separate CI job** builds/tests the wheel. The pure-Rust gate
-  excludes the py crate (`extension-module` feature-gated), so `cargo xtask ci` stays green and keyless.
-- [ ] Python-side smoke + contract tests; publish wheels to **PyPI** (trusted publishing, no stored token).
-- [ ] Promotes `agent-core`'s `Engine`/`Answer` to a committed, SemVer-tracked surface (note in ARCHITECTURE).
+## Phase 14 — Packaging & release ⭐ (ships `v0.1.0`)
+- [ ] Ship the **binary and the Python wheels together** (co-first-class); install docs, a demo, the
+  `ask --json`/SDK/API contract reference.
+- [ ] Signed, reproducible release + checksums + SBOM (the Phase-0 pipeline); wheels to **PyPI** (trusted
+  publishing). Tag **`v0.1.0`** — the first public release.
 
 ---
 
 ## Cross-cutting standards (apply to every phase)
-- **Pure where it counts.** Data-prep and compute are pure functions, unit-tested without network — the
-  home for evals.
-- **`thiserror` in libs, `anyhow` at the app boundary; `#![forbid(unsafe_code)]`; MSRV pinned + CI-guarded.**
-- **Newtypes / typed canonical schema across trait boundaries** (a decimal price type replaces `f64` — see
-  LEARN-TECHNICAL.md); `#[non_exhaustive]` on public types.
-- **Every phase closes with a git tag + a working demo + green CI**, and isn't started until the prior is
-  green.
+- **Async, streaming, non-panicking.** `tokio` I/O; answers stream; errors are values (`thiserror` in libs,
+  `anyhow` at the app; `#![forbid(unsafe_code)]`).
+- **Config & logs are 12-factor** (§0.6): env-layered config, secrets from env, `tracing` to stderr,
+  stdout for output. **Dev/prod parity** via the mock adapters.
+- **Two surfaces at parity.** A capability isn't done until it's in **both** the CLI and the Python SDK.
+- **Typed canonical schema across boundaries** (decimal prices; `#[non_exhaustive]`); MSRV pinned + CI-guarded.
+- **Every phase closes with a git tag + a working demo + green CI**, and isn't started until the prior is green.
 
 ## Risks & open decisions (the dragons)
-- **LLM reliability / hallucination.** The grounding + eval discipline (§0.5-5/-6, Phase 10) is the defense;
-  a wrong number must be impossible-to-miss, not silent.
-- **Provider API drift & licensing.** The anti-corruption layer + fixtures handle drift; respect each
-  source's redistribution terms (never re-serve their data).
-- **Cost & latency.** Real model/data calls cost money and time — caching (Phase 8) and budgets (Phase 10).
-- **Crowded space.** The wedge is craft + the pluggable/keyless/self-hostable core + the Kalshi angle, not
-  novelty.
+- **Open-ended questions vs a fixed compute vocabulary.** Addressed by the Phase-9 computation model
+  (query DSL) — the alternative (an endless `Metric` enum) never covers what users ask.
+- **LLM reliability / hallucination.** Grounding check + evals ship **with the first real LLM** (Phase 3),
+  not at the end; a wrong number must be impossible-to-miss.
+- **Sync→async / streaming retrofit.** Defused up front in Phase 2, before adapters/SDK/API harden.
+- **Provider API drift & *licensing*.** The anti-corruption layer + fixtures handle drift; redistribution
+  terms are a **business-model gate** on caching (11) and the API (12), not a footnote — read the TOS early.
+- **Cost & latency.** Caching (11) + per-answer budgets (11/13).
+- **Crowded space.** The wedge is craft + Claude-Code-grade DX + first-class SDK + the pluggable/keyless
+  self-hostable core + the Kalshi angle.
 
 ## Architectural invariants (never traded away)
-Headless engine, pure-view surfaces · the two trait seams (`Model` + `DataProvider`) · canonical schema as
-the drift-defeating anti-corruption layer · capabilities declared, contract-tests-in-CI · grounded-not-advice
-· keyless mock-first · secrets out of the repo · stable additive wire contract · one-way open-core boundary.
+Headless engine, pure-view surfaces · **CLI and Python SDK at parity** · the two trait seams
+(`Model` + `DataProvider`) · **async + streaming** seams · canonical schema (decimal, UTC) as the
+drift-defeating anti-corruption layer · capabilities declared, contract-tests-in-CI · grounded-not-advice
+(grounding check in CI) · **12-factor config/logs/backing-services** · keyless mock-first · secrets out of
+the repo · stable additive wire/SDK contract · one-way open-core boundary.
 
 [`Plan`]: ./crates/core/src/lib.rs
