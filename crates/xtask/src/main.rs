@@ -1,7 +1,8 @@
 //! `cargo xtask <cmd>` — dev orchestration for the monitor.
 //!
-//! `ci` runs the full local gate (fmt, clippy, build, test, deny) — the same checks CI runs,
-//! stopping at the first failure. No GPU needed: tests drive the mock collector.
+//! `ci` runs the full local gate (fmt, clippy, build, test, feature powerset, deny) — the same checks,
+//! in the same order, that `.github/workflows/ci.yml` runs, stopping at the first failure. No GPU
+//! needed: tests drive the mock collector.
 
 use std::process::Command;
 
@@ -16,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the full local gate (fmt, clippy, build, test, deny) — mirrors CI.
+    /// Run the full local gate (fmt, clippy, build, test, feature powerset, deny) — mirrors CI.
     Ci,
 }
 
@@ -27,10 +28,28 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn ci() -> anyhow::Result<()> {
+    // `--locked` everywhere so a stale Cargo.lock fails here, not in CI (which also builds --locked).
+    // Assumes cargo-deny and cargo-hack are installed, exactly as the deny step always has.
     cargo(&["fmt", "--all", "--check"])?;
-    cargo(&["clippy", "--all-targets", "--", "-D", "warnings"])?;
-    cargo(&["build"])?;
-    cargo(&["test"])?;
+    cargo(&[
+        "clippy",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings",
+    ])?;
+    cargo(&["build", "--locked"])?;
+    cargo(&["test", "--locked"])?;
+    // No --locked here: --no-dev-deps rewrites the manifests, which would force a lock update that
+    // --locked forbids. Lock freshness is already gated by the build/test/clippy steps above.
+    cargo(&[
+        "hack",
+        "--feature-powerset",
+        "--no-dev-deps",
+        "check",
+        "--workspace",
+    ])?;
     cargo(&["deny", "check"])?;
     println!("\n✓ all checks passed");
     Ok(())

@@ -16,6 +16,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Faster, less disk on the runner (incremental caching buys nothing for a clean CI build).
+  CARGO_INCREMENTAL: 0
+  # Deny compiler warnings on build/test too, not just clippy. Dependency warnings are `--cap-lints`
+  # capped by cargo, so only our own crates are held to this. Locally the same bar is enforced by the
+  # `clippy --all-targets -- -D warnings` step (clippy wraps rustc), so this keeps CI == the gate.
+  RUSTFLAGS: -D warnings
 
 jobs:
   check:
@@ -56,8 +62,10 @@ jobs:
           tool: cargo-hack
       # Every feature combination (and --no-default-features) must compile. Trivial today — no features
       # are defined yet — but it guards the DCGM/Splunk/etc. features the moment they land.
+      # No --locked here: --no-dev-deps rewrites the manifests (stripping dev-deps like proptest), which
+      # would force a lock update that --locked forbids. Lock freshness is already gated by the check job.
       - name: Check the feature powerset
-        run: cargo hack --feature-powerset --no-dev-deps check --workspace --locked
+        run: cargo hack --feature-powerset --no-dev-deps check --workspace
 
   deny:
     name: supply chain (cargo-deny)
@@ -67,3 +75,14 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  # The single check to require in branch protection. Green only if every job above succeeded or was
+  # skipped — add a job above and it's covered here automatically, no branch-rule edit needed.
+  ci-status:
+    name: CI status
+    if: always()
+    needs: [check, features, deny]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every job passed
+        run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'

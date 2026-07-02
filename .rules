@@ -27,7 +27,7 @@ is still named `agent`; the rename is a pre-Phase-1 task).
 | Run the live TUI | `cargo run -p agent -- top` |
 | One-shot snapshot (scriptable) | `cargo run -p agent -- ps` · `… -- ps --json` |
 | Run with **no GPU** (mock source) | append `--mock` (or `AGENT_SOURCE=mock`) |
-| Full local gate before pushing | `cargo xtask ci` (build + clippy + fmt + test + deny) |
+| Full local gate before pushing | `cargo xtask ci` (fmt + clippy + build + test + feature powerset + deny) |
 | Test (headless, no GPU needed) | `cargo test` |
 | Lint — must be clean | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` |
 | Supply chain | `cargo deny check` |

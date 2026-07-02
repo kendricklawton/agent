@@ -1,0 +1,29 @@
+# Scheduled supply-chain audit. ci.yml already runs cargo-deny on every push/PR; this re-checks a quiet
+# `main` against the latest RustSec advisory DB on a schedule, so a CVE disclosed against a dep we
+# haven't touched surfaces without waiting for the next commit (the anyhow RUSTSEC-2026-0190 class of
+# thing). `rustsec/audit-check` opens/updates a GitHub issue on a new advisory — actionable on a quiet
+# repo, unlike a red ✗ nobody's watching. Also runnable on demand.
+name: Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # every Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # audit-check files/updates an advisory issue
+
+jobs:
+  advisories:
+    name: cargo-audit advisories
+    if: github.repository == 'kendricklawton/agent'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+        # The GitHub API rate-limits this intermittently; a flaky scheduled run shouldn't page us, the
+        # issue it files is the real signal.
+        continue-on-error: true

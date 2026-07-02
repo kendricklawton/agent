@@ -20,6 +20,8 @@ env:
 jobs:
   release:
     name: build · sign · publish (x86_64-linux)
+    # Guard against a fork's tag push triggering our signing/publish flow. Update at the repo rename.
+    if: github.repository == 'kendricklawton/agent'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,20 +45,49 @@ jobs:
           cp README.md LICENSE "dist/${name}/"
           tar -C dist -czf "${name}.tar.gz" "${name}"
           sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "tarball=${name}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # SBOM from the committed Cargo.lock (syft reads it) — makes SECURITY.md's "signed releases + SBOM"
+      # promise real. Covers the whole workspace lock; the shipped binary is a subset of that graph.
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: ${{ steps.package.outputs.name }}.sbom.cdx.json
+          upload-artifact: false
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      # Keyless: identity comes from the GitHub OIDC token; the signature + cert are verifiable with
+      # Keyless: identity comes from the GitHub OIDC token; each signature + cert is verifiable with
       # `cosign verify-blob` against this workflow's identity. No long-lived secret to manage or leak.
-      - name: Sign the artifact (keyless)
+      # Sign the tarball and the SBOM so both are tamper-evident.
+      - name: Sign the artifacts (keyless)
         run: |
           set -euo pipefail
-          cosign sign-blob --yes \
-            --output-signature   "${{ steps.package.outputs.tarball }}.sig" \
-            --output-certificate "${{ steps.package.outputs.tarball }}.pem" \
-            "${{ steps.package.outputs.tarball }}"
+          for f in "${{ steps.package.outputs.tarball }}" "${{ steps.package.outputs.name }}.sbom.cdx.json"; do
+            cosign sign-blob --yes \
+              --output-signature   "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              "${f}"
+          done
+
+      # Fail the release before publishing if a signature doesn't verify — a broken signing config
+      # should never ship. Identity is pinned to this workflow file on this repo.
+      - name: Verify the signatures
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          for f in "${{ steps.package.outputs.tarball }}" "${{ steps.package.outputs.name }}.sbom.cdx.json"; do
+            cosign verify-blob \
+              --certificate          "${f}.pem" \
+              --signature            "${f}.sig" \
+              --certificate-identity "${identity}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${f}"
+          done
 
       - name: Publish the GitHub Release
         uses: softprops/action-gh-release@v2
@@ -69,3 +100,6 @@ jobs:
             ${{ steps.package.outputs.tarball }}.sha256
             ${{ steps.package.outputs.tarball }}.sig
             ${{ steps.package.outputs.tarball }}.pem
+            ${{ steps.package.outputs.name }}.sbom.cdx.json
+            ${{ steps.package.outputs.name }}.sbom.cdx.json.sig
+            ${{ steps.package.outputs.name }}.sbom.cdx.json.pem

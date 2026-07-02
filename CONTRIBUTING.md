@@ -80,15 +80,17 @@ cargo run -p agent -- ps --json | jq .     # cross-check the numbers against nvi
 Run the same checks CI runs, in one shot:
 
 ```console
-cargo xtask ci    # build + clippy + fmt + test + deny, stops at the first failure
+cargo install cargo-deny cargo-hack   # one-time: the gate shells out to both
+cargo xtask ci                        # fmt + clippy + build + test + feature powerset + deny, stops at the first failure
 ```
 
 …or individually:
 
 ```console
-cargo test                                   # headless, no GPU needed (mock source)
-cargo clippy --all-targets -- -D warnings
+cargo test --locked                          # headless, no GPU needed (mock source)
+cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --all --check
+cargo hack --feature-powerset --no-dev-deps check --workspace   # no --locked: --no-dev-deps rewrites manifests
 cargo deny check
 ```
 

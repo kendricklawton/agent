@@ -1,0 +1,10 @@
+# cargo-audit config — consumed by the scheduled audit (.github/workflows/audit.yml → rustsec/audit-check).
+# cargo-audit does NOT read deny.toml, so these ignores must mirror deny.toml's [advisories.ignore] to keep
+# the two supply-chain tools in agreement. Both are *unmaintained* notices (not vulnerabilities) on
+# transitive deps of the egui/wgpu GUI stack, with no safe upgrade available. Drop them (here and in
+# deny.toml) when egui's font/winit tree moves off them.
+[advisories]
+ignore = [
+    "RUSTSEC-2024-0436", # paste (unmaintained) — accesskit → egui-winit → eframe
+    "RUSTSEC-2026-0192", # ttf-parser (unmaintained) — ab_glyph → epaint → egui
+]
