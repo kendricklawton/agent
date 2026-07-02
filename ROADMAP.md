@@ -13,9 +13,11 @@ The whole engine is one **async, streaming** loop across two ports:
 `DataProvider`, canonical data comes back) → `Model` streams a grounded answer.**
 
 - **`Model`** (an LLM adapter): drives a **tool-use loop** — it calls the engine's query tool, receives
-  canonical data, and **streams** a grounded answer. Claude first; OpenAI/local next.
+  canonical data, and **streams** a grounded answer. **Claude, OpenAI, and Gemini ship at launch** (Claude
+  is the reference that shapes the loop); local models next.
 - **`DataProvider`** (a data adapter): declares its capabilities, returns data in the **canonical schema**.
-  Polygon first; Kalshi/prediction-markets and custom sources next.
+  **Polygon and Yahoo Finance ship at launch** (Polygon licensed/reference; Yahoo keyless but unofficial);
+  Kalshi/prediction-markets and custom sources next.
 - **The engine** owns the loop, executes the query tool (the deterministic `compute`), and publishes an
   `Answer` (+ a token stream). Every surface — **CLI**, **Python SDK**, and the later **API** — is a pure
   view of the same engine.
@@ -55,9 +57,10 @@ The whole engine is one **async, streaming** loop across two ports:
 
 ## Phase index
 0. Scaffold, CI & release · 1. Engine skeleton + mock slice · 2. Async · streaming · config foundation ·
-3. Real LLM (Claude) + evals · 4. Real data (Polygon) + schema correctness · 5. Interactive CLI (the
-Claude-Code feel) · 6. Python SDK (first-class, co-shipped) · 7. Drift defense · 8. More adapters + config ·
-9. Richer queries & the computation model · 10. Prediction markets (Kalshi) · 11. Caching & reliability ·
+3. Real LLMs (Claude · OpenAI · Gemini) + evals · 4. Real data (Polygon + Yahoo) + schema correctness ·
+5. Interactive CLI (the Claude-Code feel) · 6. Python SDK (first-class, co-shipped) · 7. Drift defense ·
+8. Adapter registry + local models · 9. Richer queries & the computation model · 10. Prediction markets
+(Kalshi) · 11. Caching & reliability ·
 12. Server / API surface · 13. Eval suite & quality budgets · 14. Packaging & release — ships `v0.1.0`
 (binary **+ wheels**).
 
@@ -75,25 +78,39 @@ Claude-Code feel) · 6. Python SDK (first-class, co-shipped) · 7. Drift defense
 ## Phase 2 — Async · streaming · config foundation ⭐ (architecture hardening — before any real I/O)
 Do the irreversible shape decisions *before* the first HTTP adapter, so streaming, async, and config don't
 have to be retrofitted through the SDK and API later.
-- [ ] Make the seams **async** (`tokio`), object-safe (boxed futures/streams or `async-trait`); `Engine::ask`
-  returns an **answer stream** + the final `Answer`.
+- [x] Make the seams **async** (`tokio`), object-safe via **`async-trait`** (the engine holds
+  `Box<dyn Model>`/`Box<dyn DataProvider>` for runtime adapter selection); `Engine::ask` is `async`. Gate
+  green, wire contract unchanged.
 - [ ] Reshape `Model` around a **tool-use loop** (the engine is the tool executor), replacing the split
-  `plan()`/`answer()` — matches the Messages API and generalizes to multi-turn.
+  `plan()`/`answer()` — matches the Messages API and generalizes to multi-turn. **`Engine::ask` returns an
+  answer stream** here (built once, on the loop's final shape — not on the soon-deleted `plan`/`answer`).
 - [ ] **12-factor config** (§0.6): a layered `Config` (flags > env > file > defaults); structured `tracing`
   logs to stderr; stdout reserved for output.
 - [ ] Mock adapters + CLI updated to stream; gate stays green, still keyless.
 
-## Phase 3 — Real LLM adapter (Claude) ⭐ + evals in-phase
-- [ ] A `claude` `Model` adapter (`reqwest`, streaming, tool-use; key from `AGENT_*` env). Rate limits,
-  timeouts, failures as values; keys redacted from logs/errors.
-- [ ] Contract tests over **recorded fixtures** (offline) **and** a **grounding check** — assert the answer
-  actually used the fetched data — so hallucination is caught from day one, not at Phase 13.
-- [ ] Known-answer evals extended to the real streamed tool-use path (recorded).
+## Phase 3 — Real LLM adapters (Claude · OpenAI · Gemini) ⭐ + evals in-phase
+Three real LLMs at launch, not one — the true test that the tool-use loop seam is right **before** it freezes.
+- [ ] A `claude` `Model` adapter first (`reqwest`, streaming, tool-use; key from `AGENT_*` env) — the
+  reference that shapes the loop. Rate limits, timeouts, failures as values; keys redacted from logs/errors.
+- [ ] Then `openai` and `gemini` adapters over the **same** `respond()` loop, each mapping its own
+  tool-calling shape (Anthropic `tool_use` · OpenAI `tool_calls` · Gemini `functionCall`) → the canonical
+  `Step`. If the seam can't absorb all three, fix it now — mock-only cost, pre-freeze.
+- [ ] Contract tests over **recorded fixtures** (offline, per adapter) **and** a **grounding check** — assert
+  the answer actually used the fetched data — so hallucination is caught from day one, not at Phase 13.
+- [ ] Known-answer evals extended to the real streamed tool-use path (recorded) for all three.
 
-## Phase 4 — Real data provider (Polygon) + schema correctness
-- [ ] A `polygon` `DataProvider` (`reqwest`; key from env) mapping raw aggregates → canonical `Bar`.
+## Phase 4 — Real data providers (Polygon + Yahoo Finance) + schema correctness
+Two real sources at launch: Polygon (licensed reference) and Yahoo Finance (**keyless** — real data with no
+signup, the best first-run demo).
+- [ ] A `polygon` `DataProvider` (`reqwest`; key from env) mapping raw aggregates → canonical `Bar` — the
+  licensed reference source, with clean, license-checked fixtures.
+- [ ] A `yahoo` `DataProvider` over the **unofficial** `query1.finance.yahoo.com` endpoint (**no key**).
+  Treat it as best-effort: **synthetic, hand-authored fixtures** matching its documented JSON shape (never
+  commit captured Yahoo data — redistribution/ToS), live path **opt-in**, "unofficial" stated in its adapter
+  docs. Its volatility is exactly what the anti-corruption layer + contract tests exist to absorb.
 - [ ] **Get the data correct** (the #1 bug class — see LEARN-PRODUCT.md): **decimal** prices, explicit
-  **adjusted-vs-unadjusted**, symbology, trading-calendar/timezone handling; a `Capabilities` descriptor.
+  **adjusted-vs-unadjusted**, symbology, trading-calendar/timezone handling; a `Capabilities` descriptor per
+  provider (they differ — e.g. adjusted-close availability).
 - [ ] Pagination, retries with backoff; recorded-fixture contract tests; real end-to-end (opt-in, needs keys).
 
 ## Phase 5 — Interactive CLI: the Claude-Code feel ⭐
@@ -120,8 +137,9 @@ at **CLI↔SDK parity** (§0.5-6) forever after; ships with `v0.1.0`, not after.
 - [ ] Capability negotiation: the engine declines (clearly) queries a provider can't serve.
 - [ ] Canonical **schema versioning** + additive-evolution rules; goldens for `ask --json` and the SDK types.
 
-## Phase 8 — More adapters + config/registry
-- [ ] A second model (OpenAI/local) and a second data provider — proving the seams generalize.
+## Phase 8 — Adapter registry + local models
+- [ ] The seams are already proven across three LLMs + two providers (Phases 3–4); here add a **local /
+  self-hosted model** behind the same `respond()` loop — the offline, no-vendor option.
 - [ ] Adapter registry; select model + provider via config (§0.6); feature-gate each real adapter.
 
 ## Phase 9 — Richer queries & the computation model
@@ -173,6 +191,8 @@ at **CLI↔SDK parity** (§0.5-6) forever after; ships with `v0.1.0`, not after.
 - **Sync→async / streaming retrofit.** Defused up front in Phase 2, before adapters/SDK/API harden.
 - **Provider API drift & *licensing*.** The anti-corruption layer + fixtures handle drift; redistribution
   terms are a **business-model gate** on caching (11) and the API (12), not a footnote — read the TOS early.
+  **Yahoo Finance is unofficial** (no supported API, ToS gray area): keyless and great for onboarding, but
+  fixtures are **synthetic-only**, the live path is **opt-in**, and we never redistribute its data.
 - **Cost & latency.** Caching (11) + per-answer budgets (11/13).
 - **Crowded space.** The wedge is craft + Claude-Code-grade DX + first-class SDK + the pluggable/keyless
   self-hostable core + the Kalshi angle.

@@ -9,6 +9,7 @@
 use std::time::{Duration, SystemTime};
 
 use agent_core::{Bar, Capabilities, DataProvider, DataQuery, ProviderError};
+use async_trait::async_trait;
 
 /// Seconds in a day, for spacing the synthetic bars.
 const DAY: u64 = 86_400;
@@ -17,6 +18,7 @@ const DAY: u64 = 86_400;
 /// `100.0, 101.0, …` — so the average/latest/max/min are known exactly (the eval tests rely on this).
 pub struct MockProvider;
 
+#[async_trait]
 impl DataProvider for MockProvider {
     fn name(&self) -> &str {
         "mock"
@@ -26,7 +28,7 @@ impl DataProvider for MockProvider {
         Capabilities::new(true)
     }
 
-    fn bars(&mut self, query: &DataQuery) -> Result<Vec<Bar>, ProviderError> {
+    async fn bars(&mut self, query: &DataQuery) -> Result<Vec<Bar>, ProviderError> {
         let n = query.last_days.max(1);
         let bars = (0..n)
             .map(|i| {
@@ -43,10 +45,10 @@ impl DataProvider for MockProvider {
 mod tests {
     use super::*;
 
-    #[test]
-    fn returns_the_requested_count_of_known_bars() {
+    #[tokio::test]
+    async fn returns_the_requested_count_of_known_bars() {
         let mut p = MockProvider;
-        let bars = p.bars(&DataQuery::new("FOO", 3)).expect("bars");
+        let bars = p.bars(&DataQuery::new("FOO", 3)).await.expect("bars");
         assert_eq!(bars.len(), 3);
         assert!((bars[0].close - 100.0).abs() < 1e-9);
         assert!((bars[2].close - 102.0).abs() < 1e-9);

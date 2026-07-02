@@ -11,9 +11,10 @@ use agent_core::Engine;
 ///
 /// # Errors
 /// If the engine cannot answer (planning, fetching, or the computation failed).
-pub fn ask(engine: &mut Engine, question: &str, json: bool) -> anyhow::Result<()> {
+pub async fn ask(engine: &mut Engine, question: &str, json: bool) -> anyhow::Result<()> {
     let answer = engine
         .ask(question)
+        .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if json {
         println!("{}", serde_json::to_string(&answer)?);

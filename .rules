@@ -32,8 +32,8 @@ no keys.
 ## Layout
 ```
 crates/core       engine: canonical schema, the Model + DataProvider traits, the NL→query→answer flow
-crates/models     LLM adapters: mock now; claude, then openai/local
-crates/providers  data adapters: mock now; polygon, then kalshi/custom
+crates/models     LLM adapters: mock now; claude + openai + gemini at launch; local next
+crates/providers  data adapters: mock now; polygon + yahoo at launch; kalshi/custom next
 crates/cli        terminal surface (lib): ask (+ --json)
 crates/app        the binary: subcommand dispatch, wires model + provider → engine
 xtask             dev/build orchestration (never shipped)

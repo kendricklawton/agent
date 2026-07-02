@@ -9,6 +9,7 @@
 
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use serde::Serialize;
 
 // ───────────────────────── canonical schema ─────────────────────────
@@ -161,6 +162,10 @@ pub struct Answer {
 
 /// An LLM adapter: turns a question into a structured [`Plan`], then composes a grounded answer. A new
 /// model (Claude, OpenAI, local) is a new impl and nothing else. `Send` so the engine can move threads.
+///
+/// The I/O methods are `async` because a real adapter is a network round-trip; [`async_trait`] keeps the
+/// trait object-safe so the engine can hold a `Box<dyn Model>` chosen at runtime.
+#[async_trait]
 pub trait Model: Send {
     /// A short label ("mock", "claude", …).
     fn name(&self) -> &str;
@@ -169,13 +174,13 @@ pub trait Model: Send {
     ///
     /// # Errors
     /// If the question can't be turned into a plan (e.g. no instrument found).
-    fn plan(&mut self, question: &str) -> Result<Plan, ModelError>;
+    async fn plan(&mut self, question: &str) -> Result<Plan, ModelError>;
 
     /// Compose a grounded answer from the computed value and the data used.
     ///
     /// # Errors
     /// If the model fails to produce an answer.
-    fn answer(
+    async fn answer(
         &mut self,
         question: &str,
         metric: Metric,
@@ -186,6 +191,9 @@ pub trait Model: Send {
 
 /// A data-source adapter: declares its capabilities and returns data in the canonical schema. A new source
 /// (Polygon, Kalshi, custom) is a new impl and nothing else.
+///
+/// [`bars`](DataProvider::bars) is `async` (a network fetch); the sync methods just describe the adapter.
+#[async_trait]
 pub trait DataProvider: Send {
     /// A short label ("mock", "polygon", …).
     fn name(&self) -> &str;
@@ -197,7 +205,7 @@ pub trait DataProvider: Send {
     ///
     /// # Errors
     /// If the source can't be reached or its response can't be mapped.
-    fn bars(&mut self, query: &DataQuery) -> Result<Vec<Bar>, ProviderError>;
+    async fn bars(&mut self, query: &DataQuery) -> Result<Vec<Bar>, ProviderError>;
 }
 
 // ───────────────────────── errors ─────────────────────────
@@ -258,14 +266,17 @@ impl Engine {
     ///
     /// # Errors
     /// If planning, fetching, or the computation fails, or the provider can't serve the query.
-    pub fn ask(&mut self, question: &str) -> Result<Answer, EngineError> {
-        let plan = self.model.plan(question)?;
+    pub async fn ask(&mut self, question: &str) -> Result<Answer, EngineError> {
+        let plan = self.model.plan(question).await?;
         if !self.provider.capabilities().bars {
             return Err(EngineError::Unsupported(self.provider.name().to_owned()));
         }
-        let bars = self.provider.bars(&plan.query)?;
+        let bars = self.provider.bars(&plan.query).await?;
         let value = compute(plan.metric, &bars)?;
-        let text = self.model.answer(question, plan.metric, value, &bars)?;
+        let text = self
+            .model
+            .answer(question, plan.metric, value, &bars)
+            .await?;
         Ok(Answer {
             question: question.to_owned(),
             model: self.model.name().to_owned(),
@@ -332,14 +343,15 @@ mod tests {
 
     // Stub adapters drive the engine end-to-end with no network — the discipline for testing the seams.
     struct StubModel;
+    #[async_trait]
     impl Model for StubModel {
         fn name(&self) -> &str {
             "stub"
         }
-        fn plan(&mut self, _q: &str) -> Result<Plan, ModelError> {
+        async fn plan(&mut self, _q: &str) -> Result<Plan, ModelError> {
             Ok(Plan::new(DataQuery::new("FOO", 3), Metric::AverageClose))
         }
-        fn answer(
+        async fn answer(
             &mut self,
             _q: &str,
             metric: Metric,
@@ -357,6 +369,7 @@ mod tests {
     struct StubProvider {
         bars: bool,
     }
+    #[async_trait]
     impl DataProvider for StubProvider {
         fn name(&self) -> &str {
             "stub"
@@ -364,15 +377,15 @@ mod tests {
         fn capabilities(&self) -> Capabilities {
             Capabilities::new(self.bars)
         }
-        fn bars(&mut self, _q: &DataQuery) -> Result<Vec<Bar>, ProviderError> {
+        async fn bars(&mut self, _q: &DataQuery) -> Result<Vec<Bar>, ProviderError> {
             Ok(vec![bar(100.0), bar(101.0), bar(102.0)])
         }
     }
 
-    #[test]
-    fn engine_answers_end_to_end() {
+    #[tokio::test]
+    async fn engine_answers_end_to_end() {
         let mut e = Engine::new(Box::new(StubModel), Box::new(StubProvider { bars: true }));
-        let a = e.ask("whatever").expect("answer");
+        let a = e.ask("whatever").await.expect("answer");
         assert_eq!(a.metric, Metric::AverageClose);
         assert!((a.value - 101.0).abs() < 1e-9);
         assert_eq!(a.bars_used, 3);
@@ -380,10 +393,10 @@ mod tests {
         assert!(a.text.contains("101"));
     }
 
-    #[test]
-    fn engine_rejects_a_provider_that_cannot_serve_bars() {
+    #[tokio::test]
+    async fn engine_rejects_a_provider_that_cannot_serve_bars() {
         let mut e = Engine::new(Box::new(StubModel), Box::new(StubProvider { bars: false }));
-        assert!(matches!(e.ask("x"), Err(EngineError::Unsupported(_))));
+        assert!(matches!(e.ask("x").await, Err(EngineError::Unsupported(_))));
     }
 
     #[test]

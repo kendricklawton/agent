@@ -6,11 +6,14 @@ license.workspace = true
 publish = false
 
 [dependencies]
-serde.workspace     = true
-thiserror.workspace = true
+async-trait.workspace = true
+serde.workspace       = true
+thiserror.workspace   = true
 
 [dev-dependencies]
 proptest.workspace = true
+# A runtime to drive the async seams in `#[tokio::test]`.
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

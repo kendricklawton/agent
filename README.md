@@ -13,9 +13,9 @@ Every "ask-your-data" tool is welded to one model and one data source. Swap the 
 you rewrite everything — and when a provider changes its API, your app breaks in production. This engine
 makes both **pluggable** and puts a **stable schema** between you and every provider, so:
 
-- **Bring any model.** Claude, OpenAI, or a local/custom model — behind one `Model` trait.
-- **Bring any data.** Polygon for markets, a custom source, prediction markets (e.g. Kalshi) later — behind
-  one `DataProvider` trait.
+- **Bring any model.** Claude, OpenAI, Gemini, or a local/custom model — behind one `Model` trait.
+- **Bring any data.** Polygon (licensed) and Yahoo Finance (keyless) for markets, a custom source,
+  prediction markets (e.g. Kalshi) later — behind one `DataProvider` trait.
 - **Survive API drift.** Providers map their raw API to the engine's **canonical schema**; a provider's
   breaking change is contained to its adapter and caught by tests, not by your users.
 

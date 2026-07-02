@@ -31,8 +31,8 @@ new adapter and **nothing else** — the core depends on neither a specific mode
 | Crate | Role |
 |-------|------|
 | `crates/core` | The engine: the `Model` + `DataProvider` traits, the canonical schema (`Bar`, `DataQuery`, `Metric`, `Answer`), `Capabilities`, and the pure `compute()`. **The spine.** |
-| `crates/models` | LLM adapters behind `Model`: `mock` now; `claude`, then `openai`/local, next. |
-| `crates/providers` | Data adapters behind `DataProvider`: `mock` now; `polygon`, then `kalshi`/custom, next. |
+| `crates/models` | LLM adapters behind `Model`: `mock` now; `claude` + `openai` + `gemini` at launch; local next. |
+| `crates/providers` | Data adapters behind `DataProvider`: `mock` now; `polygon` + `yahoo` at launch; `kalshi`/custom next. |
 | `crates/cli` | Terminal frontend (lib): the one-shot `ask` (+ `--json`). |
 | `crates/app` | The single binary: subcommand dispatch, wires a model + a provider into the engine. |
 | `xtask` | Build/dev orchestration (dev-only, never shipped). |
@@ -83,6 +83,13 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
     keeping `plan`/`answer` (can't express tool loops or multi-turn) and letting the LLM compute (breaks
     grounding). Streaming (`Step::Done` as a token delta stream) and the async boxing strategy for
     `Box<dyn Model>` layer on top of this same loop — see the async + streaming invariant.
+    - *Async boxing (landed first, Phase 2):* the seams are `async` via **`async-trait`**, chosen because
+      the engine holds `Box<dyn Model>`/`Box<dyn DataProvider>` for runtime adapter selection (12-factor
+      backing services) and native `async fn` in traits isn't `dyn`-compatible. *Rejected:* generic
+      `Engine<M, P>` + native async fn (kills runtime selection); hand-rolled `Pin<Box<dyn Future>>` (more
+      boilerplate, no benefit — the per-call box is negligible next to an HTTP round-trip). The async
+      substrate landed **before** this loop reshape so the two hard changes stay independently bisectable;
+      streaming lands *with* the loop, built once on its final shape.
 
 ## Platform & trust surface
 
@@ -90,8 +97,9 @@ Unprivileged userspace — no root. The engine's real-world touchpoints are **ou
 LLM and data providers (using **your API keys, from env/config only**) and **parsing their responses**.
 
 - **Rust, stable**, one host target (Linux `x86_64` first; others follow the same pure-Rust build).
-- **Models:** any LLM behind the `Model` trait — Claude first, then OpenAI/local.
-- **Data:** any source behind `DataProvider` — Polygon first, then Kalshi/prediction markets and custom.
+- **Models:** any LLM behind the `Model` trait — Claude, OpenAI, and Gemini at launch; local next.
+- **Data:** any source behind `DataProvider` — Polygon (licensed) and Yahoo Finance (keyless, **unofficial**)
+  at launch; Kalshi/prediction markets and custom next.
 - **Secrets** never touch the repo, logs, or fixtures. The **mock** adapters need no keys and no network.
 
 ## Extension model & non-goals

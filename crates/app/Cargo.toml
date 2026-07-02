@@ -16,6 +16,7 @@ agent-providers.workspace = true
 agent-cli.workspace       = true
 anyhow.workspace          = true
 clap.workspace            = true
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [lints]
 workspace = true

@@ -25,8 +25,15 @@ serde_json = { version = "1", default-features = false, features = ["std"] }
 # Property-based testing (dev-only): the engine's compute invariants.
 proptest = "1"
 
-# Real adapters add HTTP here when they land (reqwest + tokio for Claude/Polygon); the mock adapters need
-# no network, so the workspace stays dependency-light until then.
+# --- async substrate ---
+# The two seams (Model + DataProvider) are async because every real adapter is network I/O. tokio is the
+# runtime; async-trait makes the async methods object-safe so the engine can hold `Box<dyn Model>` and
+# select adapters at runtime (12-factor backing services). Features stay minimal until reqwest lands.
+tokio       = { version = "1", default-features = false }
+async-trait = "0.1"
+
+# Real HTTP adapters add `reqwest` here when they land (Claude/Polygon); the mock adapters need no network,
+# so the workspace stays dependency-light until then.
 
 # House lints (each crate opts in with `[lints] workspace = true`). The no-panic discipline:
 # unwrap/expect/panic are denied in non-test code; clippy.toml re-allows them in tests.

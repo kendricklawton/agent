@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use agent_core::{Bar, DataQuery, Metric, Model, ModelError, Plan};
+use async_trait::async_trait;
 
 /// Default lookback when the question doesn't specify one.
 const DEFAULT_DAYS: u32 = 7;
@@ -15,12 +16,13 @@ const DEFAULT_DAYS: u32 = 7;
 /// and formats a grounded answer. Stands in for a real tool-calling model.
 pub struct MockModel;
 
+#[async_trait]
 impl Model for MockModel {
     fn name(&self) -> &str {
         "mock"
     }
 
-    fn plan(&mut self, question: &str) -> Result<Plan, ModelError> {
+    async fn plan(&mut self, question: &str) -> Result<Plan, ModelError> {
         let symbol = extract_symbol(question).ok_or_else(|| {
             ModelError::Failed("no ticker (an UPPERCASE symbol) found in the question".to_owned())
         })?;
@@ -29,7 +31,7 @@ impl Model for MockModel {
         Ok(Plan::new(DataQuery::new(symbol, last_days), metric))
     }
 
-    fn answer(
+    async fn answer(
         &mut self,
         _question: &str,
         metric: Metric,
@@ -103,19 +105,20 @@ mod tests {
         assert_eq!(extract_days("last week"), None); // no "day"
     }
 
-    #[test]
-    fn plans_a_full_question() {
+    #[tokio::test]
+    async fn plans_a_full_question() {
         let mut m = MockModel;
         let plan = m
             .plan("average close of FOO over the last 3 days")
+            .await
             .expect("plan");
         assert_eq!(plan.query, DataQuery::new("FOO", 3));
         assert_eq!(plan.metric, Metric::AverageClose);
     }
 
-    #[test]
-    fn errors_without_a_ticker() {
+    #[tokio::test]
+    async fn errors_without_a_ticker() {
         let mut m = MockModel;
-        assert!(m.plan("what is the weather today").is_err());
+        assert!(m.plan("what is the weather today").await.is_err());
     }
 }

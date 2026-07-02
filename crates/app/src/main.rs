@@ -36,7 +36,10 @@ enum Cmd {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+// A single-threaded runtime is plenty: the CLI issues one sequential ask. The multi-thread scheduler
+// (and net/time features) arrive with the real HTTP adapters.
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if !cli.mock {
         eprintln!(
@@ -47,7 +50,7 @@ fn main() -> anyhow::Result<()> {
     // Only the mock adapters exist so far; real Model/DataProvider selection arrives with them.
     let mut engine = Engine::new(Box::new(MockModel), Box::new(MockProvider));
     match cli.cmd {
-        Cmd::Ask { question, json } => agent_cli::ask(&mut engine, &question, json),
+        Cmd::Ask { question, json } => agent_cli::ask(&mut engine, &question, json).await,
     }
 }
 
@@ -57,11 +60,12 @@ mod tests {
 
     /// Known-answer eval: the mock provider's closes are 100, 101, 102 over 3 days → average 101.0, and
     /// the engine must compute and ground it correctly. This is the seed of the eval suite.
-    #[test]
-    fn known_answer_average_close() {
+    #[tokio::test]
+    async fn known_answer_average_close() {
         let mut engine = Engine::new(Box::new(MockModel), Box::new(MockProvider));
         let answer = engine
             .ask("average close of FOO over the last 3 days")
+            .await
             .expect("engine answers");
         assert_eq!(answer.metric, agent_core::Metric::AverageClose);
         assert!((answer.value - 101.0).abs() < 1e-9);
