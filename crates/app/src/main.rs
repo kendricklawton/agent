@@ -122,7 +122,10 @@ mod tests {
             build_provider("mock").unwrap(),
         );
         let answer = engine
-            .ask("average close of FOO over the last 3 days")
+            .ask(
+                "average close of FOO over the last 3 days",
+                &mut agent_core::NullSink,
+            )
             .await
             .expect("engine answers");
         assert_eq!(answer.metric, agent_core::Metric::AverageClose);

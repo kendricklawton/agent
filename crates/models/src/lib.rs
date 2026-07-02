@@ -7,8 +7,11 @@
 
 #![forbid(unsafe_code)]
 
-use agent_core::{Conversation, Metric, Model, ModelError, Step, ToolCall, ToolResult, ToolSpec};
+use agent_core::{
+    AnswerDeltas, Conversation, Metric, Model, ModelError, Step, ToolCall, ToolResult, ToolSpec,
+};
 use async_trait::async_trait;
+use futures::{StreamExt, stream};
 use serde_json::{Value, json};
 
 /// Default lookback when the question doesn't specify one.
@@ -29,9 +32,10 @@ impl Model for MockModel {
         conversation: &Conversation,
         _tools: &[ToolSpec],
     ) -> Result<Step, ModelError> {
-        // If the engine has already run the query and fed the result back, ground the final answer on it.
+        // If the engine has already run the query and fed the result back, ground the final answer on it,
+        // streamed word-by-word (a real adapter streams its SSE tokens here instead).
         if let Some(result) = last_tool_result(conversation) {
-            return Ok(Step::Done(compose_answer(&result.output)?));
+            return Ok(Step::Done(answer_stream(compose_answer(&result.output)?)));
         }
         // Otherwise this is the first turn: parse the question into a `query` tool call.
         let question = question_text(conversation).unwrap_or_default();
@@ -88,6 +92,16 @@ fn compose_answer(output: &Value) -> Result<String, ModelError> {
         "The {} was {value:.2} over the last {bars_used} bar(s) (source: mock).",
         metric.label(),
     ))
+}
+
+/// Chunk a finished answer into word-sized deltas so the surface renders it progressively. Uses
+/// `split_inclusive(' ')` so the spaces are kept and concatenation reconstructs the text exactly.
+fn answer_stream(text: String) -> AnswerDeltas {
+    let chunks: Vec<Result<String, ModelError>> = text
+        .split_inclusive(' ')
+        .map(|c| Ok(c.to_owned()))
+        .collect();
+    stream::iter(chunks).boxed()
 }
 
 /// First UPPERCASE alphabetic token of length 1–5 — a rough ticker match.
@@ -193,11 +207,17 @@ mod tests {
             json!({ "metric": "average_close", "value": 101.0, "bars_used": 3 }),
         ))]));
         let step = MockModel.respond(&c, &[]).await.expect("step");
-        let Step::Done(text) = step else {
+        let Step::Done(deltas) = step else {
             panic!("expected a final answer, got {step:?}");
         };
+        // Collect the streamed deltas; concatenation must reconstruct the full grounded sentence.
+        let chunks: Vec<String> = deltas.map(|d| d.expect("delta")).collect().await;
+        assert!(
+            chunks.len() >= 2,
+            "expected the answer to stream in ≥2 chunks"
+        );
         assert_eq!(
-            text,
+            chunks.concat(),
             "The average close was 101.00 over the last 3 bar(s) (source: mock)."
         );
     }

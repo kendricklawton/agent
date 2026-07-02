@@ -31,6 +31,8 @@ proptest = "1"
 # select adapters at runtime (12-factor backing services). Features stay minimal until reqwest lands.
 tokio       = { version = "1", default-features = false }
 async-trait = "0.1"
+# Streaming: `Step::Done` is a `Stream` of answer-text deltas; `futures` provides the trait + combinators.
+futures     = { version = "0.3", default-features = false, features = ["std"] }
 
 # --- 12-factor config + logging ---
 # Layered config (flags > env > file > defaults): `toml` parses the file layer; `serde` maps it.

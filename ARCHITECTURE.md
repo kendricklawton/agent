@@ -94,8 +94,13 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
       the frozen seam survives richer tools. **One `query` tool** now (fetch + `compute`, atomic and
       grounded); granular fetch/compute tools come with the Phase-9 query model. A **step budget** and an
       **ungrounded-answer guard** (a `Done` with no executed `query` is refused) enforce termination and
-      honesty. `Engine::ask` still returns `Answer`; **streaming is the next Phase-2 step**, built once on
-      this loop's `Step::Done`.
+      honesty.
+    - *Streaming (landed, Phase 2):* `Step::Done` carries a **`Stream` of text deltas** (freeze-safe — a real
+      LLM streams SSE tokens and can't return a whole `String` without buffering). `Engine::ask` takes a
+      **`&mut dyn TokenSink`** and pushes each delta to the surface as it consumes the stream, still returning
+      the full `Answer`. *Why a push sink over `ask -> impl Stream`:* object-safe over `Box<dyn Model>`, no
+      `&mut self` borrow entanglement, and it bridges cleanly to a Python callback (SDK) or an SSE channel
+      (server). The human CLI streams to stdout; `--json` uses a `NullSink` and stays atomic.
 11. **Config is layered and adapter selection is config, not code.** *(Landed, Phase 2.)* One `Config`
     resolved **flags > env (`AGENT_*`) > file (TOML) > defaults**, with IO split from logic (a pure
     `resolve` fold, unit-tested for precedence; an impure `load` that reads env + an explicit-path file).

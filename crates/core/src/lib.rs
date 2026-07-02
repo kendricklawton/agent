@@ -9,9 +9,10 @@
 
 #![forbid(unsafe_code)]
 
-use std::time::SystemTime;
+use std::{pin::Pin, time::SystemTime};
 
 use async_trait::async_trait;
+use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -247,15 +248,37 @@ impl ToolResult {
     }
 }
 
+/// A stream of answer-text deltas (tokens/chunks) the model produces for its final turn. A real adapter
+/// wraps its SSE byte-stream; the mock chunks its composed sentence. `Send` + `'static` so it's owned (never
+/// borrows the model) and works across threads. Each item is `Ok(chunk)` or a `ModelError` mid-stream.
+pub type AnswerDeltas = Pin<Box<dyn Stream<Item = Result<String, ModelError>> + Send>>;
+
+/// Build an [`AnswerDeltas`] that yields `text` as a single delta — the simplest adapter case (no chunking).
+#[must_use]
+pub fn answer_from_text(text: impl Into<String>) -> AnswerDeltas {
+    stream::once(std::future::ready(Ok(text.into()))).boxed()
+}
+
 /// One turn of the model's reasoning: either run tools, or the final grounded answer. Replaces the old
-/// split `plan`/`answer` — "planning" is now just the model choosing to call the `query` tool.
-#[derive(Clone, Debug)]
+/// split `plan`/`answer` — "planning" is now just the model choosing to call the `query` tool. `Done`
+/// carries a **stream** so the answer text can arrive incrementally (a real LLM streams tokens over SSE and
+/// can't hand back a whole `String` without buffering the response first).
 #[non_exhaustive]
 pub enum Step {
     /// Run these tools, feed the results back, and ask the model again.
     UseTools(Vec<ToolCall>),
-    /// The model's final, grounded answer text.
-    Done(String),
+    /// The model's final, grounded answer, streamed delta-by-delta.
+    Done(AnswerDeltas),
+}
+
+// Hand-written because `AnswerDeltas` (a boxed stream) is neither `Clone` nor `Debug`.
+impl std::fmt::Debug for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::UseTools(calls) => f.debug_tuple("UseTools").field(calls).finish(),
+            Step::Done(_) => f.write_str("Done(<answer stream>)"),
+        }
+    }
 }
 
 /// What a provider can serve — the engine checks this before planning a fetch it can't fulfil. Grows a
@@ -432,6 +455,21 @@ fn tool_specs() -> Vec<ToolSpec> {
     }]
 }
 
+/// Receives the answer's text as it streams. [`Engine::ask`] calls [`push`](TokenSink::push) for each delta,
+/// so a surface can render tokens live (the CLI) or discard them and use the final [`Answer`] instead
+/// (`--json`). Push-based on purpose: it's object-safe and bridges to a Python callback or an SSE channel.
+pub trait TokenSink: Send {
+    /// A chunk of the answer text, in order.
+    fn push(&mut self, delta: &str);
+}
+
+/// A [`TokenSink`] that discards every delta — for callers that only want the final [`Answer`] (e.g. `--json`).
+pub struct NullSink;
+
+impl TokenSink for NullSink {
+    fn push(&mut self, _delta: &str) {}
+}
+
 /// Ties a [`Model`] to a [`DataProvider`] and answers questions. Holds boxed adapters so the binary picks
 /// them at runtime (`--mock` vs real), and the surfaces stay decoupled from concrete adapters.
 pub struct Engine {
@@ -451,11 +489,18 @@ impl Engine {
     /// fetches and computes, so the number is trustworthy) and feed the results back, until the model returns
     /// its final [`Step::Done`]. The answer is grounded in the last `query` the engine executed.
     ///
+    /// The final answer text is **streamed** to `sink` delta-by-delta as it's produced (pass
+    /// [`NullSink`] to ignore it); the returned [`Answer`] still carries the full text + provenance.
+    ///
     /// # Errors
     /// If the model fails, a tool call is unknown/undecodable, the provider can't serve the query, the model
     /// answers without grounding ([`EngineError::Ungrounded`]), or it exceeds the step budget
     /// ([`EngineError::StepLimit`]).
-    pub async fn ask(&mut self, question: &str) -> Result<Answer, EngineError> {
+    pub async fn ask(
+        &mut self,
+        question: &str,
+        sink: &mut dyn TokenSink,
+    ) -> Result<Answer, EngineError> {
         let tools = tool_specs();
         let mut conversation = Conversation::new();
         conversation.push(Message::user(vec![Block::Text(question.to_owned())]));
@@ -485,8 +530,15 @@ impl Engine {
                     }
                     conversation.push(Message::user(results));
                 }
-                Step::Done(text) => {
+                Step::Done(mut deltas) => {
+                    // Grounding is checked *before* streaming, so an ungrounded answer emits nothing.
                     let g = grounded.ok_or(EngineError::Ungrounded)?;
+                    let mut text = String::new();
+                    while let Some(delta) = deltas.next().await {
+                        let delta = delta?;
+                        sink.push(&delta);
+                        text.push_str(&delta);
+                    }
                     tracing::debug!(
                         value = g.value,
                         bars_used = g.bars_used,
@@ -627,7 +679,13 @@ mod tests {
             _tools: &[ToolSpec],
         ) -> Result<Step, ModelError> {
             if let Some(value) = last_result_value(convo) {
-                return Ok(Step::Done(format!("grounded: {value}")));
+                // Emit in ≥2 chunks so tests can prove the answer streams, not arrives as one blob.
+                let text = format!("grounded: {value}");
+                let chunks: Vec<Result<String, ModelError>> = text
+                    .split_inclusive(' ')
+                    .map(|c| Ok(c.to_owned()))
+                    .collect();
+                return Ok(Step::Done(stream::iter(chunks).boxed()));
             }
             Ok(Step::UseTools(vec![ToolCall {
                 id: "1".to_owned(),
@@ -669,7 +727,20 @@ mod tests {
             _convo: &Conversation,
             _tools: &[ToolSpec],
         ) -> Result<Step, ModelError> {
-            Ok(Step::Done("42, trust me".to_owned()))
+            Ok(Step::Done(answer_from_text("42, trust me")))
+        }
+    }
+
+    /// A [`TokenSink`] that records the streamed deltas — for asserting the answer arrives incrementally.
+    #[derive(Default)]
+    struct CollectingSink {
+        text: String,
+        deltas: usize,
+    }
+    impl TokenSink for CollectingSink {
+        fn push(&mut self, delta: &str) {
+            self.text.push_str(delta);
+            self.deltas += 1;
         }
     }
 
@@ -690,20 +761,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_runs_the_tool_loop_and_grounds() {
+    async fn engine_runs_the_tool_loop_and_grounds_and_streams() {
         let mut e = Engine::new(Box::new(StubModel), Box::new(StubProvider { bars: true }));
-        let a = e.ask("whatever").await.expect("answer");
+        let mut sink = CollectingSink::default();
+        let a = e.ask("whatever", &mut sink).await.expect("answer");
         assert_eq!(a.metric, Metric::AverageClose);
         assert!((a.value - 101.0).abs() < 1e-9); // avg of 100,101,102
         assert_eq!(a.bars_used, 3);
         assert_eq!((a.model.as_str(), a.provider.as_str()), ("stub", "stub"));
         assert!(a.text.contains("101")); // the model grounded on the fed-back value
+        // The sink saw the same text, delivered incrementally.
+        assert_eq!(sink.text, a.text);
+        assert!(
+            sink.deltas >= 2,
+            "expected ≥2 streamed deltas, got {}",
+            sink.deltas
+        );
     }
 
     #[tokio::test]
     async fn engine_rejects_a_provider_that_cannot_serve_bars() {
         let mut e = Engine::new(Box::new(StubModel), Box::new(StubProvider { bars: false }));
-        assert!(matches!(e.ask("x").await, Err(EngineError::Unsupported(_))));
+        assert!(matches!(
+            e.ask("x", &mut NullSink).await,
+            Err(EngineError::Unsupported(_))
+        ));
     }
 
     #[tokio::test]
@@ -712,16 +794,24 @@ mod tests {
             Box::new(LoopingModel),
             Box::new(StubProvider { bars: true }),
         );
-        assert!(matches!(e.ask("x").await, Err(EngineError::StepLimit(_))));
+        assert!(matches!(
+            e.ask("x", &mut NullSink).await,
+            Err(EngineError::StepLimit(_))
+        ));
     }
 
     #[tokio::test]
-    async fn engine_rejects_an_ungrounded_answer() {
+    async fn engine_rejects_an_ungrounded_answer_and_streams_nothing() {
         let mut e = Engine::new(
             Box::new(UngroundedModel),
             Box::new(StubProvider { bars: true }),
         );
-        assert!(matches!(e.ask("x").await, Err(EngineError::Ungrounded)));
+        let mut sink = CollectingSink::default();
+        assert!(matches!(
+            e.ask("x", &mut sink).await,
+            Err(EngineError::Ungrounded)
+        ));
+        assert_eq!(sink.deltas, 0, "an ungrounded answer must stream nothing");
     }
 
     #[tokio::test]
@@ -749,7 +839,10 @@ mod tests {
             Box::new(BadToolModel),
             Box::new(StubProvider { bars: true }),
         );
-        assert!(matches!(e.ask("x").await, Err(EngineError::Tool(_))));
+        assert!(matches!(
+            e.ask("x", &mut NullSink).await,
+            Err(EngineError::Tool(_))
+        ));
     }
 
     #[test]

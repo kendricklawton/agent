@@ -91,9 +91,9 @@ Each factor maps to something concrete in this plan; the ✓ ones are already in
 - [x] The two trait seams + canonical schema (`Bar`/`DataQuery`/`Metric`/`Answer`) + `Capabilities` + pure
   `compute()`; `MockModel` + `MockProvider`; `agent ask --mock` (+ `--json`); a known-answer eval. Green.
 
-## Phase 2 — Async · streaming · config foundation ⭐ (architecture hardening — before any real I/O)
-Do the irreversible shape decisions *before* the first HTTP adapter, so streaming, async, and config don't
-have to be retrofitted through the SDK and API later.
+## Phase 2 — Async · streaming · config foundation ✅ (architecture hardening — before any real I/O)
+Did the irreversible shape decisions *before* the first HTTP adapter, so streaming, async, and config didn't
+have to be retrofitted through the SDK and API later. **Complete.**
 - [x] Make the seams **async** (`tokio`), object-safe via **`async-trait`** (the engine holds
   `Box<dyn Model>`/`Box<dyn DataProvider>` for runtime adapter selection); `Engine::ask` is `async`. Gate
   green, wire contract unchanged.
@@ -104,8 +104,9 @@ have to be retrofitted through the SDK and API later.
 - [x] **12-factor config** (§0.6): a layered `Config` resolved **flags > env (`AGENT_*`) > file (TOML) >
   defaults**; model/provider selection is config (a name → adapter registry in the app). `tracing` logs to
   **stderr** with stdout reserved for the answer/`--json`. Gate green.
-- [ ] **Streaming**: `Engine::ask` returns an answer stream (`Step::Done` → token deltas on the loop above);
-  mock adapters + CLI render tokens live. Gate stays green, still keyless.
+- [x] **Streaming**: `Step::Done` carries a `Stream` of text deltas; `Engine::ask(question, &mut dyn
+  TokenSink)` forwards each delta to the surface as it's produced and returns the full `Answer`. The CLI
+  streams tokens to stdout (flushing each); `--json` stays atomic via a `NullSink`. Gate green, keyless.
 
 ## Phase 3 — Real LLM adapters (Claude · OpenAI · Gemini) ⭐ + evals in-phase
 Three real LLMs at launch, not one — the true test that the tool-use loop seam is right **before** it freezes.
