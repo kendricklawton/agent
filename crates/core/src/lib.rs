@@ -461,6 +461,11 @@ impl Engine {
         conversation.push(Message::user(vec![Block::Text(question.to_owned())]));
         // Provenance of the last `query` the engine ran — an answer with none is ungrounded.
         let mut grounded: Option<Grounded> = None;
+        tracing::debug!(
+            model = self.model.name(),
+            provider = self.provider.name(),
+            "engine: starting tool-use loop"
+        );
 
         for _ in 0..MAX_STEPS {
             match self.model.respond(&conversation, &tools).await? {
@@ -468,6 +473,7 @@ impl Engine {
                     if calls.is_empty() {
                         return Err(EngineError::Tool("the model requested no tools".to_owned()));
                     }
+                    tracing::debug!(tools = calls.len(), "engine: model requested tools");
                     conversation.push(Message::assistant(
                         calls.iter().cloned().map(Block::ToolCall).collect(),
                     ));
@@ -481,6 +487,11 @@ impl Engine {
                 }
                 Step::Done(text) => {
                     let g = grounded.ok_or(EngineError::Ungrounded)?;
+                    tracing::debug!(
+                        value = g.value,
+                        bars_used = g.bars_used,
+                        "engine: grounded answer"
+                    );
                     return Ok(Answer {
                         question: question.to_owned(),
                         model: self.model.name().to_owned(),
@@ -511,6 +522,12 @@ impl Engine {
                     .bars(&DataQuery::new(input.symbol, input.last_days))
                     .await?;
                 let value = compute(input.metric, &bars)?;
+                tracing::debug!(
+                    metric = ?input.metric,
+                    bars = bars.len(),
+                    value,
+                    "engine: ran query tool"
+                );
                 let grounded = Grounded {
                     metric: input.metric,
                     value,

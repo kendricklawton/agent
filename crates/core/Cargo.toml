@@ -11,6 +11,8 @@ serde.workspace       = true
 # Tool-call inputs/outputs are JSON (the shape every real LLM provider uses); serde_json carries them.
 serde_json.workspace  = true
 thiserror.workspace   = true
+# Logging facade — the engine emits `debug!` events; the app configures where they go.
+tracing.workspace     = true
 
 [dev-dependencies]
 proptest.workspace = true

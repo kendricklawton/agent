@@ -1,7 +1,11 @@
-//! `agent-cli` — the terminal surface: the one-shot `ask` command. A pure view of the engine's
-//! [`Answer`](agent_core::Answer) — it never calls a model or a data provider directly.
+//! `agent-cli` — the terminal surface: the one-shot `ask` command plus the layered [`config`] and stderr
+//! [`logging`] the binary wires up. A pure view of the engine's [`Answer`](agent_core::Answer) — it never
+//! calls a model or a data provider directly.
 
 #![forbid(unsafe_code)]
+
+pub mod config;
+pub mod logging;
 
 use agent_core::Engine;
 
@@ -12,10 +16,18 @@ use agent_core::Engine;
 /// # Errors
 /// If the engine cannot answer (planning, fetching, or the computation failed).
 pub async fn ask(engine: &mut Engine, question: &str, json: bool) -> anyhow::Result<()> {
+    tracing::debug!(question, "cli: answering question");
     let answer = engine
         .ask(question)
         .await
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    tracing::debug!(
+        model = answer.model,
+        provider = answer.provider,
+        value = answer.value,
+        bars_used = answer.bars_used,
+        "cli: got grounded answer"
+    );
     if json {
         println!("{}", serde_json::to_string(&answer)?);
     } else {

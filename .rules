@@ -20,9 +20,11 @@ provider directly.
 | Task | Command |
 |------|---------|
 | Build | `cargo build` |
-| Ask a question | `cargo run -p agent -- ask "…"` |
-| No API keys (mock model + mock provider) | append `--mock` |
+| Ask a question (mock is the keyless default) | `cargo run -p agent -- ask "…"` |
+| Force the mock pair explicitly | append `--mock` (= `--model mock --provider mock`) |
 | Machine output | append `--json` |
+| Verbose logs → **stderr** (stdout stays answer-only) | prepend `AGENT_LOG=debug` (or `--log debug`) |
+| Config: `flags > env (AGENT_*) > file > defaults` | `--model` / `--provider` / `--log` / `--config <toml>` |
 | Test (offline, recorded fixtures) | `cargo test` |
 | **Local gate — run before every push** | `cargo xtask ci` (fmt + clippy + build + test + feature powerset + deny) |
 

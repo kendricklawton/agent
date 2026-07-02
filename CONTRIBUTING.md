@@ -18,7 +18,8 @@ ask a question in plain English and get an answer grounded in real data, by plug
   codegen step.
 - For **real answers**: an API key for your chosen LLM (e.g. Claude) and data provider (e.g. Polygon), set
   via **environment variables** — never committed. For **no keys at all**: the built-in **mock** model +
-  mock provider (`--mock`), which make every command build, run, test, and demo offline.
+  mock provider are the **keyless default** (`--mock` forces them explicitly), so every command builds,
+  runs, tests, and demos offline.
 
 ## Quick start
 
@@ -26,13 +27,16 @@ ask a question in plain English and get an answer grounded in real data, by plug
 git clone <repo> && cd agent
 cargo build
 
-# Ask a question. --mock uses the mock model + mock data source (no API keys, no network):
-cargo run -p agent -- ask "average close of FOO over the last 3 days" --mock
-cargo run -p agent -- ask "latest close of FOO" --mock --json   # structured output for scripts
+# Ask a question. The mock model + mock data source are the keyless default (no API keys, no network):
+cargo run -p agent -- ask "average close of FOO over the last 3 days"
+cargo run -p agent -- ask "latest close of FOO" --json          # structured output for scripts (stdout only)
+AGENT_LOG=debug cargo run -p agent -- ask "latest close of FOO"  # event-stream logs → stderr; answer → stdout
 ```
 
 A bare `cargo build` builds the whole workspace. Build one crate with `cargo build -p <crate>` (e.g.
-`-p agent-core`). Real model/provider adapters land in Phases 2–3 and read their keys from the environment.
+`-p agent-core`). Config is layered **flags > env (`AGENT_*`) > file > defaults**: pick adapters with
+`--model`/`--provider` (or `AGENT_MODEL`/a `--config` TOML) — only `mock` resolves today. Real model
+adapters land in **Phase 3**, data providers in **Phase 4**, reading their keys from the environment.
 
 ## Before you push — the local gate
 
@@ -61,9 +65,10 @@ fixtures keep the whole pipeline offline and deterministic.
 Almost everything runs **offline, with no API keys**, via the mock adapters and recorded fixtures; only the
 top rung needs live keys.
 
-1. **Unit (pure):** the engine's `compute()`, adapter parsers/mappers (NL→`Plan`, raw API→canonical `Bar`),
-   and format helpers — pure functions, table-driven, unit-tested with no network. Property tests
-   (`proptest`) cover engine invariants. `cargo test`.
+1. **Unit (pure):** the engine's `compute()`, the tool-use loop (`respond` → `query` tool call → grounded
+   answer), adapter parsers/mappers (NL→a `query` tool call, raw API→canonical `Bar`), config precedence,
+   and format helpers — pure/table-driven, unit-tested with no network. Property tests (`proptest`) cover
+   engine invariants. `cargo test`.
 2. **Contract tests (recorded fixtures):** each real adapter replays a captured LLM/provider response, so
    its raw→canonical mapping is deterministic and **API drift fails CI**. Capturing a fixture is the only
    step that touches a live endpoint (done deliberately, curated + license-checked, never auto-committed).

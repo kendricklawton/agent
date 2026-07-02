@@ -42,18 +42,34 @@ The whole engine is one **async, streaming** loop across two ports:
    for known-answer evals.
 9. **No panics.** `unwrap`/`expect`/`panic!` denied outside tests; a failed model/provider call is a value.
 
-## §0.6 Twelve-factor mapping (how the engine stays operable)
-- **III Config in the environment.** Layered precedence: **flags > env (`AGENT_*`) > config file > defaults**.
-  API keys and model/provider selection are config, never code. **VIII Secrets** never committed/logged.
-- **IV Backing services as attached resources.** The LLM and the data source *are* backing services — the
-  adapters. Swap Claude→OpenAI or Polygon→another by config, no code change.
-- **VI Stateless processes.** Conversation/session state lives in a **store** (disk locally, a backing store
-  for the server), not process memory — so the API scales horizontally.
-- **X Dev/prod parity.** The **mock** adapters keep dev ≈ prod: same engine, same code path, keyless.
-- **XI Logs as event streams.** Structured logging via `tracing` to **stderr** (never a log file); stdout is
-  reserved for the answer / `--json`. **XII Admin tasks** are `xtask` subcommands (e.g. fixture capture).
-- **VII Port binding · IX Disposability.** The server (Phase 12) binds a port, starts fast, shuts down
-  gracefully.
+## §0.6 Twelve-factor mapping (all twelve — how the engine stays operable)
+Each factor maps to something concrete in this plan; the ✓ ones are already in the tree.
+- **I Codebase.** ✓ One Cargo **workspace** in git → many deploys (the binary, the Python wheels, the
+  server) from the same commit; no per-deploy forks.
+- **II Dependencies.** ✓ Explicitly declared in `Cargo.toml`; builds are **`--locked`** from the committed
+  `Cargo.lock`; **`cargo-deny`** gates the tree; each real adapter is **feature-gated**. No implicit system libs.
+- **III Config.** ✓ Layered precedence **flags > env (`AGENT_*`) > file (TOML) > defaults**; model/provider
+  selection and **API keys are config, never code**. **Secrets come from env only** — never committed,
+  logged, or placed in a fixture.
+- **IV Backing services.** The LLM and the data source *are* attached resources — the adapters. Swap
+  Claude→OpenAI or Polygon→Yahoo by config, no code change.
+- **V Build, release, run.** ✓ Separate stages: `cargo xtask ci` + the tag-triggered pipeline produce an
+  **immutable, signed artifact** (checksums + SBOM); *run* just executes it with config — nothing is built
+  at run time.
+- **VI Processes.** **Stateless**; conversation/session state lives in a **store** (disk locally, a backing
+  store for the server), not process memory.
+- **VII Port binding.** The server (Phase 12) is self-contained (`axum`) and **binds a port** — no injected
+  webserver.
+- **VIII Concurrency.** Scale **out** via the stateless process model (the server runs horizontally); scale
+  **in** via async fan-out of provider/LLM calls (`tokio`).
+- **IX Disposability.** Fast start, **graceful shutdown** (the server drains in-flight; the CLI is inherently
+  disposable); a crash loses nothing because state is external.
+- **X Dev/prod parity.** ✓ The **mock** adapters keep dev ≈ prod — same engine, same code path, keyless —
+  and the same `--locked` build runs everywhere.
+- **XI Logs.** ✓ Structured `tracing` events to **stderr** (never a log file); **stdout is reserved** for the
+  answer / `--json`.
+- **XII Admin processes.** One-off tasks are **`xtask`** subcommands (CI, fixture capture) run against the
+  same codebase + deps.
 
 ## Phase index
 0. Scaffold, CI & release · 1. Engine skeleton + mock slice · 2. Async · streaming · config foundation ·
@@ -85,8 +101,9 @@ have to be retrofitted through the SDK and API later.
   single `query` tool (fetch + `compute`) so grounding is structural. Replaces `plan()`/`answer()`; tool
   calls are JSON (`ToolCall`/`ToolResult`), a step budget + ungrounded-answer guard enforce termination and
   honesty. Surfaces + wire contract unchanged, gate green.
-- [ ] **12-factor config** (§0.6): a layered `Config` (flags > env > file > defaults); structured `tracing`
-  logs to stderr; stdout reserved for output.
+- [x] **12-factor config** (§0.6): a layered `Config` resolved **flags > env (`AGENT_*`) > file (TOML) >
+  defaults**; model/provider selection is config (a name → adapter registry in the app). `tracing` logs to
+  **stderr** with stdout reserved for the answer/`--json`. Gate green.
 - [ ] **Streaming**: `Engine::ask` returns an answer stream (`Step::Done` → token deltas on the loop above);
   mock adapters + CLI render tokens live. Gate stays green, still keyless.
 
@@ -179,8 +196,9 @@ at **CLI↔SDK parity** (§0.5-6) forever after; ships with `v0.1.0`, not after.
 ## Cross-cutting standards (apply to every phase)
 - **Async, streaming, non-panicking.** `tokio` I/O; answers stream; errors are values (`thiserror` in libs,
   `anyhow` at the app; `#![forbid(unsafe_code)]`).
-- **Config & logs are 12-factor** (§0.6): env-layered config, secrets from env, `tracing` to stderr,
-  stdout for output. **Dev/prod parity** via the mock adapters.
+- **Twelve-factor throughout** (§0.6, all twelve): env-layered config + secrets-from-env, `--locked`
+  declared deps, backing-service adapters, stateless processes, separate build/release/run, `tracing` to
+  stderr / stdout for output, **dev/prod parity** via the mock adapters.
 - **Two surfaces at parity.** A capability isn't done until it's in **both** the CLI and the Python SDK.
 - **Typed canonical schema across boundaries** (decimal prices; `#[non_exhaustive]`); MSRV pinned + CI-guarded.
 - **Every phase closes with a git tag + a working demo + green CI**, and isn't started until the prior is green.
@@ -203,7 +221,7 @@ at **CLI↔SDK parity** (§0.5-6) forever after; ships with `v0.1.0`, not after.
 Headless engine, pure-view surfaces · **CLI and Python SDK at parity** · the two trait seams
 (`Model` + `DataProvider`) · **async + streaming** seams · canonical schema (decimal, UTC) as the
 drift-defeating anti-corruption layer · capabilities declared, contract-tests-in-CI · grounded-not-advice
-(grounding check in CI) · **12-factor config/logs/backing-services** · keyless mock-first · secrets out of
-the repo · stable additive wire/SDK contract · one-way open-core boundary.
+(grounding check in CI) · **twelve-factor throughout** (all twelve; §0.6) · keyless mock-first · secrets out
+of the repo · stable additive wire/SDK contract · one-way open-core boundary.
 
 [`Plan`]: ./crates/core/src/lib.rs

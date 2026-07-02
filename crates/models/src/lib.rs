@@ -118,8 +118,7 @@ fn extract_days(q: &str) -> Option<u32> {
         return None;
     }
     s.split(|c: char| !c.is_ascii_digit())
-        .filter_map(|t| t.parse::<u32>().ok())
-        .next()
+        .find_map(|t| t.parse::<u32>().ok())
 }
 
 #[cfg(test)]

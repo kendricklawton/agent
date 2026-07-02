@@ -31,9 +31,10 @@ you ask ─▶ [ LLM plans a query ] ─▶ [ data provider returns canonical da
 
 ## Usage
 ```
-agent ask "what was NVDA's average close last week?"     # uses your configured model + provider
-agent ask "…" --json                                     # structured output for scripts
-agent ask "…" --mock                                     # no API keys: mock model + mock data
+agent ask "what was NVDA's average close last week?"     # mock model + provider is the keyless default
+agent ask "…" --json                                     # structured output for scripts (stdout only)
+AGENT_LOG=debug agent ask "…"                            # event-stream logs to stderr; answer stays on stdout
+agent ask "…" --model mock --config agent.toml           # config: flags > env (AGENT_*) > file > defaults
 ```
 
 ## How it fits together

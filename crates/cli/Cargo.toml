@@ -9,6 +9,12 @@ publish = false
 agent-core.workspace = true
 anyhow.workspace     = true
 serde_json.workspace = true
+# Layered config + logging (12-factor): serde/toml parse the file layer, tracing emits, the subscriber
+# renders to stderr.
+serde.workspace              = true
+toml.workspace               = true
+tracing.workspace            = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

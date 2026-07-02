@@ -96,6 +96,17 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
       **ungrounded-answer guard** (a `Done` with no executed `query` is refused) enforce termination and
       honesty. `Engine::ask` still returns `Answer`; **streaming is the next Phase-2 step**, built once on
       this loop's `Step::Done`.
+11. **Config is layered and adapter selection is config, not code.** *(Landed, Phase 2.)* One `Config`
+    resolved **flags > env (`AGENT_*`) > file (TOML) > defaults**, with IO split from logic (a pure
+    `resolve` fold, unit-tested for precedence; an impure `load` that reads env + an explicit-path file).
+    Which model/provider runs is a **name resolved to an adapter** in the app (`build_model`/`build_provider`),
+    so a new adapter registers in one place — 12-factor backing services. *Why:* every real adapter needs
+    keys + selection from the environment, and doing it now (mock-only) means Phase-3 adapters just add a
+    match arm. *Rejected:* `figment`/`config-rs` (heavier trees, license-surface risk against the
+    MIT/Apache-2.0/Unicode-3.0 allow-list) — hand-rolled `toml` + serde is a few lines and testable.
+    **Logs are an event stream:** `tracing` events (the engine emits them) render via `tracing-subscriber`
+    to **stderr**; **stdout is reserved** for the answer / `--json`, so `agent ask … 2>/dev/null` is
+    pipe-clean. Secrets come from env only — never the `Config` struct or the file.
 
 ## Platform & trust surface
 

@@ -32,6 +32,14 @@ proptest = "1"
 tokio       = { version = "1", default-features = false }
 async-trait = "0.1"
 
+# --- 12-factor config + logging ---
+# Layered config (flags > env > file > defaults): `toml` parses the file layer; `serde` maps it.
+# `tracing` is the logging facade (events from the engine); `tracing-subscriber` renders them to stderr,
+# filtered by config, so stdout stays reserved for the answer / `--json`.
+toml               = "0.8"
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 # Real HTTP adapters add `reqwest` here when they land (Claude/Polygon); the mock adapters need no network,
 # so the workspace stays dependency-light until then.
 
