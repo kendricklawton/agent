@@ -335,7 +335,7 @@ pub mod engine {
 
     use arc_swap::ArcSwap;
 
-    use super::{Collector, Model, Point};
+    use super::{Collector, DeviceSample, Model, Point};
 
     /// Hard floor on the sample interval — the engine never samples faster than this, so no config can
     /// make the loop busy-spin or the monitor a hog (keystone 6).
@@ -414,6 +414,25 @@ pub mod engine {
                     name: d.name.clone(),
                     latest: d.latest().copied(),
                     history: d.series().iter().copied().collect(),
+                })
+                .collect();
+            Self { state, devices }
+        }
+
+        /// Build a one-shot snapshot from a single sample set — no loop, no `Model`. Lets the one-shot
+        /// `ps` render from the same `Snapshot` type the GUI reads (the data-flow contract, §0.5).
+        #[must_use]
+        pub fn from_samples(samples: &[DeviceSample], state: SignalState) -> Self {
+            let devices = samples
+                .iter()
+                .map(|s| {
+                    let point = Point::new(s.ts, s.util, s.mem_used, s.mem_total);
+                    DeviceSnapshot {
+                        index: s.index,
+                        name: s.name.clone(),
+                        latest: Some(point),
+                        history: vec![point],
+                    }
                 })
                 .collect();
             Self { state, devices }
@@ -655,6 +674,108 @@ pub mod engine {
             }
             assert!(published, "engine should publish a device snapshot");
             drop(handle); // must join cleanly (no hang)
+        }
+    }
+}
+
+/// The machine-facing wire contract (§0.5 R6) — the stable shape of `ps --json`. Decoupled from the
+/// internal [`Snapshot`](engine::Snapshot) so renderers evolve while the JSON stays additive-only:
+/// renaming a field here is a SemVer-major break. Shared by the CLI now and the Phase 9 exporters later.
+pub mod wire {
+    use serde::Serialize;
+
+    use super::engine::Snapshot;
+
+    /// Bumped only on a breaking change to the JSON shape; new fields are additive within a version.
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    /// Top-level `ps --json` payload.
+    #[derive(Debug, Serialize)]
+    pub struct WireSnapshot {
+        /// Contract version (see [`SCHEMA_VERSION`]).
+        pub schema_version: u32,
+        /// One entry per device that has a current reading.
+        pub devices: Vec<WireDevice>,
+    }
+
+    /// One device's current values. Memory is bytes (lossless, source-native); the unit is in the field
+    /// name so a consumer can't misread it.
+    #[derive(Debug, Serialize)]
+    pub struct WireDevice {
+        /// Stable device index.
+        pub index: u32,
+        /// Human-readable name.
+        pub name: String,
+        /// GPU utilization, whole percent (`0..=100`).
+        pub util_pct: u8,
+        /// Memory in use, bytes.
+        pub mem_used_bytes: u64,
+        /// Total memory, bytes.
+        pub mem_total_bytes: u64,
+    }
+
+    impl WireSnapshot {
+        /// Project a [`Snapshot`] onto the wire contract — current values only (no history), one entry
+        /// per device that has a reading.
+        #[must_use]
+        pub fn from_snapshot(snapshot: &Snapshot) -> Self {
+            let devices = snapshot
+                .devices
+                .iter()
+                .filter_map(|d| {
+                    d.latest.map(|p| WireDevice {
+                        index: d.index,
+                        name: d.name.clone(),
+                        util_pct: p.util.get(),
+                        mem_used_bytes: p.mem_used.get(),
+                        mem_total_bytes: p.mem_total.get(),
+                    })
+                })
+                .collect();
+            Self {
+                schema_version: SCHEMA_VERSION,
+                devices,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::{Bytes, DeviceSample, Pct, SignalState};
+        use std::time::SystemTime;
+
+        #[test]
+        fn schema_version_is_one() {
+            assert_eq!(SCHEMA_VERSION, 1);
+        }
+
+        #[test]
+        fn empty_snapshot_has_no_devices() {
+            let snap = Snapshot::from_samples(&[], SignalState::Ok);
+            assert!(WireSnapshot::from_snapshot(&snap).devices.is_empty());
+        }
+
+        #[test]
+        fn from_snapshot_maps_device_fields() {
+            let samples = vec![DeviceSample::new(
+                0,
+                "Mock GPU 0".to_owned(),
+                Pct::clamped(26),
+                Bytes(5_300_000_000),
+                Bytes(24_000_000_000),
+                SystemTime::UNIX_EPOCH,
+            )];
+            let wire =
+                WireSnapshot::from_snapshot(&Snapshot::from_samples(&samples, SignalState::Ok));
+            assert_eq!(wire.schema_version, 1);
+            assert_eq!(wire.devices.len(), 1);
+            let d = &wire.devices[0];
+            assert_eq!(d.name, "Mock GPU 0");
+            assert_eq!(
+                (d.index, d.util_pct, d.mem_used_bytes, d.mem_total_bytes),
+                (0, 26, 5_300_000_000, 24_000_000_000)
+            );
         }
     }
 }

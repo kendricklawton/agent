@@ -16,6 +16,7 @@ Prometheus/OTLP.
   cross-compile, no `sudo`, no codegen step.
 - For **real data**: an NVIDIA driver / NVML on the host (no root needed). For **no GPU at all**: the
   built-in **mock** source (`--mock`) — every command builds, runs, tests, and demos without a GPU.
+  *(GPU in a Windows box? See [Real NVIDIA hardware from Windows (WSL2)](#real-nvidia-hardware-from-windows-wsl2).)*
 - For the **GUI**, `wgpu` needs a working GPU *or* a software fallback; the `top` TUI and `ps` need
   neither and run anywhere, including over SSH.
 
@@ -37,6 +38,42 @@ cargo run -p agent -- top --mock   # or: AGENT_SOURCE=mock cargo run -p agent --
 
 A bare `cargo build` builds the whole workspace — nothing is cross-compiled or embedded. Build one
 crate with `cargo build -p <crate>` (e.g. `-p agent-core`).
+
+## Real NVIDIA hardware from Windows (WSL2)
+
+The dev/CI target is **Linux** and most work runs headless on the **mock**, but exercising the real
+**NVML** path needs an NVIDIA GPU. If yours is in a Windows machine, **WSL2** is the cleanest way to reach
+it: you develop on Linux (the first-class target) while the card stays visible through the Windows driver.
+(Native Windows compiles too, but it's unvalidated — Windows is post-1.0; WSL2 is the recommended path.)
+
+> **One rule:** the GPU stack comes from the **Windows** NVIDIA driver — **never install an NVIDIA driver
+> *inside* WSL.** Doing so breaks the libraries WSL mounts from the host. Just keep the Windows driver current.
+
+```console
+# 1. Windows PowerShell (admin): install WSL2 + Ubuntu. Make sure a recent NVIDIA Windows driver is installed.
+wsl --install -d Ubuntu
+
+# 2. Inside Ubuntu — Rust toolchain + the system libs the GUI (wgpu/winit) needs to build.
+sudo apt update && sudo apt install -y \
+  build-essential pkg-config curl git jq \
+  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # rustup, stable
+
+# 3. Confirm the card is visible — provided by the Windows driver, no install needed.
+nvidia-smi
+
+# 4. Build and run against the REAL GPU. The default source is NVML, so no --mock.
+cargo run -p agent -- ps
+cargo run -p agent -- ps --json | jq .     # cross-check the numbers against nvidia-smi
+```
+
+- **If NVML init fails:** the driver mounts `libnvidia-ml.so.1` under `/usr/lib/wsl/lib` (normally already
+  on the loader path); prepend `LD_LIBRARY_PATH=/usr/lib/wsl/lib` if `ps` can't find it.
+- **Not every counter:** WSL2's NVML exposes utilization and memory but may report some metrics as
+  unsupported — those render as a clear signal state, never a crash (by design).
+- **The GUI (`agent gui`):** needs **WSLg** (built into Windows 11); `sudo apt install mesa-vulkan-drivers`
+  if the window won't open. If `wgpu` still won't start, smoke the GUI natively on Windows (or stick to
+  `ps`/`top`) — the headless surfaces are the dependable ones under WSL.
 
 ## Before you push — the local gate
 

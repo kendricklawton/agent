@@ -202,9 +202,9 @@ numbers for a script — both reading the identical `core`.
   identical with no GPU.
 - [x] **GUI:** one panel — a number + a live sparkline bound to the ring buffer; redraw on new data,
   **idle when nothing changed** (adaptive frame rate, not a busy spin).
-- [ ] **CLI:** `ps` prints a human table; `ps --json` prints structured JSON (the scripting contract —
+- [x] **CLI:** `ps` prints a human table; `ps --json` prints structured JSON (the scripting contract —
   `schema_version`, stable field names, exit codes).
-- [ ] **Decouple cleanly (§0.5):** the engine owns the sample loop and publishes an immutable `Snapshot`
+- [x] **Decouple cleanly (§0.5):** the engine owns the sample loop and publishes an immutable `Snapshot`
   (`ArcSwap`); GUI and CLI read only `core`; swapping mock↔NVML changes neither frontend. **This wires the
   data-flow contract (R1) and settles the concurrency primitive (R10).**
 - [ ] **Tests:** `core` ring-buffer semantics (bounded, ordered, wraps) — `proptest`; the mock collector
