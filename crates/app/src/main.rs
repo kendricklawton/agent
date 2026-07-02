@@ -1,6 +1,6 @@
 //! `agent` — the single binary. Resolves layered [config](agent_cli::config), initializes stderr
-//! [logging](agent_cli::logging), then wires the configured [`Model`](agent_core::Model) +
-//! [`DataProvider`](agent_core::DataProvider) into the [`Engine`] and runs the `ask` subcommand.
+//! [logging](agent_cli::logging), then wires the configured [`Model`] + [`DataProvider`] into the
+//! [`Engine`] and runs the `ask` subcommand.
 //!
 //! Which adapters run is **config, not code**: `build_model`/`build_provider` map a name to an adapter, so a
 //! new one (Phase 3) registers here. Only `mock` exists today; it's the keyless default.

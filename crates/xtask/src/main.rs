@@ -1,8 +1,8 @@
 //! `cargo xtask <cmd>` — dev orchestration for the engine.
 //!
-//! `ci` runs the full local gate (fmt, clippy, build, test, feature powerset, deny) — the same checks,
-//! in the same order, that `.github/workflows/ci.yml` runs, stopping at the first failure. No API keys
-//! needed: tests drive the mock adapters.
+//! `ci` runs the full local gate (fmt, clippy, build, test, docs, feature powerset, deny) — the same
+//! checks, in the same order, that `.github/workflows/ci.yml` runs, stopping at the first failure. No API
+//! keys needed: tests drive the mock adapters.
 
 use std::process::Command;
 
@@ -17,7 +17,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the full local gate (fmt, clippy, build, test, feature powerset, deny) — mirrors CI.
+    /// Run the full local gate (fmt, clippy, build, test, docs, feature powerset, deny) — mirrors CI.
     Ci,
 }
 
@@ -41,6 +41,12 @@ fn ci() -> anyhow::Result<()> {
     ])?;
     cargo(&["build", "--locked"])?;
     cargo(&["test", "--locked"])?;
+    // Docs are a first-class surface: broken/redundant intra-doc links and undocumented public items fail
+    // here (rustdoc `-D warnings`), not silently on the published docs.
+    cargo_env(
+        &["doc", "--no-deps", "--workspace", "--locked"],
+        &[("RUSTDOCFLAGS", "-D warnings")],
+    )?;
     // No --locked here: --no-dev-deps rewrites the manifests, which would force a lock update that
     // --locked forbids. Lock freshness is already gated by the build/test/clippy steps above.
     cargo(&[
@@ -56,7 +62,16 @@ fn ci() -> anyhow::Result<()> {
 }
 
 fn cargo(args: &[&str]) -> anyhow::Result<()> {
-    let status = Command::new("cargo").args(args).status()?;
+    cargo_env(args, &[])
+}
+
+fn cargo_env(args: &[&str], env: &[(&str, &str)]) -> anyhow::Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let status = cmd.status()?;
     anyhow::ensure!(status.success(), "`cargo {}` failed", args.join(" "));
     Ok(())
 }

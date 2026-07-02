@@ -52,6 +52,11 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic       = "deny"
 
+[workspace.lints.rust]
+# Every public item carries a doc comment — enforced, not just convention (CI's `-D warnings` makes this
+# an error). Rustdoc's broken/redundant intra-doc-link lints are gated by the `docs` CI step + xtask.
+missing_docs = "warn"
+
 # Release: small, fast. panic stays "unwind" so a panicking task is isolated, not an abort.
 [profile.release]
 lto           = "thin"

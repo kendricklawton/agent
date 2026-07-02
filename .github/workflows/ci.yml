@@ -49,6 +49,13 @@ jobs:
       - name: Test (offline via the mock adapters — no API keys)
         run: cargo test --locked
 
+      # Docs are a shipped surface (heavy intra-doc links, `missing_docs` enforced). Broken/redundant
+      # links and undocumented public items fail here instead of silently on the published docs.
+      - name: Docs
+        run: cargo doc --no-deps --workspace --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   features:
     name: feature matrix
     runs-on: ubuntu-latest

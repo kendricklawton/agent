@@ -325,7 +325,7 @@ pub struct Answer {
 /// either asks the engine to run tools or returns its final grounded answer. A new model (Claude, OpenAI,
 /// Gemini, local) is a new impl and nothing else. `Send` so the engine can move threads.
 ///
-/// `respond` is `async` because a real adapter is a network round-trip; [`async_trait`] keeps the trait
+/// `respond` is `async` because a real adapter is a network round-trip; `#[async_trait]` keeps the trait
 /// object-safe so the engine can hold a `Box<dyn Model>` chosen at runtime.
 #[async_trait]
 pub trait Model: Send {
