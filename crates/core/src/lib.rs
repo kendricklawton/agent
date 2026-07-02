@@ -9,10 +9,10 @@
 use std::collections::VecDeque;
 use std::time::SystemTime;
 
-/// Strongly-typed units — no bare numerics cross the model boundary (see `.rules`).
-/// `Celsius`/`Watts` arrive in Phase 2 with temperature/power.
+/// Strongly-typed units — no bare numerics cross the model boundary (see `.rules`). Each wraps the
+/// lossless, source-native unit NVML reports; display helpers convert.
 pub mod units {
-    /// GPU utilization as a whole percent, `0..=100`.
+    /// GPU utilization / fan speed / occupancy as a whole percent, `0..=100`.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Pct(pub u8);
 
@@ -45,14 +45,158 @@ pub mod units {
             self.0 >> 20
         }
     }
+
+    /// A temperature in whole degrees Celsius (NVML reports °C).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Celsius(pub u32);
+
+    impl Celsius {
+        /// The raw degrees Celsius.
+        #[must_use]
+        pub fn get(self) -> u32 {
+            self.0
+        }
+    }
+
+    /// Power in milliwatts (lossless, source-native — NVML reports mW).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Milliwatts(pub u32);
+
+    impl Milliwatts {
+        /// The raw milliwatts.
+        #[must_use]
+        pub fn get(self) -> u32 {
+            self.0
+        }
+        /// Watts, for display only.
+        #[must_use]
+        pub fn as_watts(self) -> f64 {
+            f64::from(self.0) / 1000.0
+        }
+    }
+
+    /// A clock frequency in megahertz (NVML reports MHz).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Megahertz(pub u32);
+
+    impl Megahertz {
+        /// The raw megahertz.
+        #[must_use]
+        pub fn get(self) -> u32 {
+            self.0
+        }
+    }
+
+    /// A throughput in kilobytes per second (NVML reports PCIe utilization in KB/s).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct KbPerSec(pub u32);
+
+    impl KbPerSec {
+        /// The raw KB/s.
+        #[must_use]
+        pub fn get(self) -> u32 {
+            self.0
+        }
+    }
 }
 
-pub use units::{Bytes, Pct};
+pub use units::{Bytes, Celsius, KbPerSec, Megahertz, Milliwatts, Pct};
 
 pub use engine::{DeviceSnapshot, SignalState, Snapshot};
 
-/// A single point-in-time sample of one GPU device. `#[non_exhaustive]` so fields can be added
-/// (temperature, power, …) without breaking renderers — construct via [`DeviceSample::new`].
+/// The metrics sampled for one device at one instant. `util`/memory are always present (the Phase 1
+/// baseline); the rest are `Option` because not every source/GPU exposes every metric — a fanless
+/// datacenter card has no fan, and SM occupancy needs DCGM (base NVML doesn't report it).
+/// `#[non_exhaustive]` + the `with_*` chain keep it additive: a new metric is one field here, shared by
+/// both [`DeviceSample`] and [`Point`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Metrics {
+    /// GPU utilization.
+    pub util: Pct,
+    /// Memory used.
+    pub mem_used: Bytes,
+    /// Total memory.
+    pub mem_total: Bytes,
+    /// GPU die temperature.
+    pub temperature: Option<Celsius>,
+    /// Board power draw.
+    pub power: Option<Milliwatts>,
+    /// SM (graphics) clock.
+    pub sm_clock: Option<Megahertz>,
+    /// Memory clock.
+    pub mem_clock: Option<Megahertz>,
+    /// SM occupancy — from DCGM; `None` on base NVML.
+    pub sm_occupancy: Option<Pct>,
+    /// PCIe transmit throughput.
+    pub pcie_tx: Option<KbPerSec>,
+    /// PCIe receive throughput.
+    pub pcie_rx: Option<KbPerSec>,
+    /// Fan speed.
+    pub fan: Option<Pct>,
+}
+
+impl Metrics {
+    /// The always-present metrics; every optional starts `None`. Fill optionals with the `with_*` chain.
+    #[must_use]
+    pub fn new(util: Pct, mem_used: Bytes, mem_total: Bytes) -> Self {
+        Self {
+            util,
+            mem_used,
+            mem_total,
+            temperature: None,
+            power: None,
+            sm_clock: None,
+            mem_clock: None,
+            sm_occupancy: None,
+            pcie_tx: None,
+            pcie_rx: None,
+            fan: None,
+        }
+    }
+
+    /// Set the die temperature.
+    #[must_use]
+    pub fn with_temperature(mut self, v: Option<Celsius>) -> Self {
+        self.temperature = v;
+        self
+    }
+    /// Set the board power draw.
+    #[must_use]
+    pub fn with_power(mut self, v: Option<Milliwatts>) -> Self {
+        self.power = v;
+        self
+    }
+    /// Set the SM and memory clocks.
+    #[must_use]
+    pub fn with_clocks(mut self, sm: Option<Megahertz>, mem: Option<Megahertz>) -> Self {
+        self.sm_clock = sm;
+        self.mem_clock = mem;
+        self
+    }
+    /// Set SM occupancy.
+    #[must_use]
+    pub fn with_sm_occupancy(mut self, v: Option<Pct>) -> Self {
+        self.sm_occupancy = v;
+        self
+    }
+    /// Set PCIe transmit/receive throughput.
+    #[must_use]
+    pub fn with_pcie(mut self, tx: Option<KbPerSec>, rx: Option<KbPerSec>) -> Self {
+        self.pcie_tx = tx;
+        self.pcie_rx = rx;
+        self
+    }
+    /// Set fan speed.
+    #[must_use]
+    pub fn with_fan(mut self, v: Option<Pct>) -> Self {
+        self.fan = v;
+        self
+    }
+}
+
+/// A single point-in-time sample of one GPU device: stable identity, its [`Metrics`], and a timestamp.
+/// `#[non_exhaustive]` — construct via [`DeviceSample::new`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DeviceSample {
@@ -60,12 +204,8 @@ pub struct DeviceSample {
     pub index: u32,
     /// Human-readable name (e.g. "NVIDIA H100").
     pub name: String,
-    /// GPU utilization.
-    pub util: Pct,
-    /// Memory used.
-    pub mem_used: Bytes,
-    /// Total memory.
-    pub mem_total: Bytes,
+    /// The sampled metrics.
+    pub metrics: Metrics,
     /// When the sample was taken. The engine restamps this with its own clock on ingest (one clock —
     /// §0.5 R3), so a collector's own value is overwritten.
     pub ts: SystemTime,
@@ -75,20 +215,11 @@ impl DeviceSample {
     /// Build a sample. Required because `#[non_exhaustive]` forbids struct-literal construction
     /// from other crates (e.g. `agent-collector`).
     #[must_use]
-    pub fn new(
-        index: u32,
-        name: String,
-        util: Pct,
-        mem_used: Bytes,
-        mem_total: Bytes,
-        ts: SystemTime,
-    ) -> Self {
+    pub fn new(index: u32, name: String, metrics: Metrics, ts: SystemTime) -> Self {
         Self {
             index,
             name,
-            util,
-            mem_used,
-            mem_total,
+            metrics,
             ts,
         }
     }
@@ -151,25 +282,16 @@ impl<T> Series<T> {
 pub struct Point {
     /// When the reading was taken.
     pub ts: SystemTime,
-    /// GPU utilization.
-    pub util: Pct,
-    /// Memory used.
-    pub mem_used: Bytes,
-    /// Total memory.
-    pub mem_total: Bytes,
+    /// The sampled metrics.
+    pub metrics: Metrics,
 }
 
 impl Point {
     /// Build a point. Needed because `#[non_exhaustive]` forbids struct-literal construction from other
     /// crates (e.g. a surface building view/test data).
     #[must_use]
-    pub fn new(ts: SystemTime, util: Pct, mem_used: Bytes, mem_total: Bytes) -> Self {
-        Self {
-            ts,
-            util,
-            mem_used,
-            mem_total,
-        }
+    pub fn new(ts: SystemTime, metrics: Metrics) -> Self {
+        Self { ts, metrics }
     }
 }
 
@@ -244,9 +366,7 @@ impl Model {
         for s in samples {
             let p = Point {
                 ts: s.ts,
-                util: s.util,
-                mem_used: s.mem_used,
-                mem_total: s.mem_total,
+                metrics: s.metrics,
             };
             match self.devices.iter_mut().find(|d| d.index == s.index) {
                 Some(d) => d.series.push(p),
@@ -426,7 +546,7 @@ pub mod engine {
             let devices = samples
                 .iter()
                 .map(|s| {
-                    let point = Point::new(s.ts, s.util, s.mem_used, s.mem_total);
+                    let point = Point::new(s.ts, s.metrics);
                     DeviceSnapshot {
                         index: s.index,
                         name: s.name.clone(),
@@ -570,7 +690,7 @@ pub mod engine {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::{Bytes, CollectError, DeviceSample, Pct};
+        use crate::{Bytes, CollectError, DeviceSample, Metrics, Pct};
 
         /// A collector that yields one device with an increasing util and a sentinel `ts`, so we can
         /// prove the engine restamps.
@@ -584,12 +704,11 @@ pub mod engine {
             }
             fn sample(&mut self) -> Result<Vec<DeviceSample>, CollectError> {
                 self.n = self.n.wrapping_add(1);
+                let metrics = Metrics::new(Pct::clamped(self.n), Bytes(1 << 30), Bytes(8 << 30));
                 Ok(vec![DeviceSample::new(
                     0,
                     "Stub".to_owned(),
-                    Pct::clamped(self.n),
-                    Bytes(1 << 30),
-                    Bytes(8 << 30),
+                    metrics,
                     SystemTime::UNIX_EPOCH, // the engine must overwrite this
                 )])
             }
@@ -618,7 +737,7 @@ pub mod engine {
             assert!(matches!(snap.state, SignalState::Ok));
             let d = &snap.devices[0];
             assert_eq!(d.history.len(), 3); // bounded at cap, oldest dropped
-            assert_eq!(d.latest.expect("a reading").util.get(), 5); // advanced
+            assert_eq!(d.latest.expect("a reading").metrics.util.get(), 5); // advanced
             assert_ne!(d.latest.expect("a reading").ts, SystemTime::UNIX_EPOCH); // engine restamped
             assert!(last_ok.is_some());
         }
@@ -712,6 +831,24 @@ pub mod wire {
         pub mem_used_bytes: u64,
         /// Total memory, bytes.
         pub mem_total_bytes: u64,
+        // Optional metrics: `null` when the source/GPU doesn't expose them. The unit is in each field
+        // name; values stay lossless integers. Added additively under schema_version 1.
+        /// GPU die temperature, degrees Celsius.
+        pub temperature_c: Option<u32>,
+        /// Board power draw, milliwatts.
+        pub power_mw: Option<u32>,
+        /// SM (graphics) clock, megahertz.
+        pub sm_clock_mhz: Option<u32>,
+        /// Memory clock, megahertz.
+        pub mem_clock_mhz: Option<u32>,
+        /// SM occupancy, whole percent — `null` on base NVML (needs DCGM).
+        pub sm_occupancy_pct: Option<u8>,
+        /// PCIe transmit throughput, kilobytes per second.
+        pub pcie_tx_kb_s: Option<u32>,
+        /// PCIe receive throughput, kilobytes per second.
+        pub pcie_rx_kb_s: Option<u32>,
+        /// Fan speed, whole percent.
+        pub fan_pct: Option<u8>,
     }
 
     impl WireSnapshot {
@@ -723,12 +860,23 @@ pub mod wire {
                 .devices
                 .iter()
                 .filter_map(|d| {
-                    d.latest.map(|p| WireDevice {
-                        index: d.index,
-                        name: d.name.clone(),
-                        util_pct: p.util.get(),
-                        mem_used_bytes: p.mem_used.get(),
-                        mem_total_bytes: p.mem_total.get(),
+                    d.latest.map(|p| {
+                        let m = p.metrics;
+                        WireDevice {
+                            index: d.index,
+                            name: d.name.clone(),
+                            util_pct: m.util.get(),
+                            mem_used_bytes: m.mem_used.get(),
+                            mem_total_bytes: m.mem_total.get(),
+                            temperature_c: m.temperature.map(|v| v.get()),
+                            power_mw: m.power.map(|v| v.get()),
+                            sm_clock_mhz: m.sm_clock.map(|v| v.get()),
+                            mem_clock_mhz: m.mem_clock.map(|v| v.get()),
+                            sm_occupancy_pct: m.sm_occupancy.map(|v| v.get()),
+                            pcie_tx_kb_s: m.pcie_tx.map(|v| v.get()),
+                            pcie_rx_kb_s: m.pcie_rx.map(|v| v.get()),
+                            fan_pct: m.fan.map(|v| v.get()),
+                        }
                     })
                 })
                 .collect();
@@ -742,7 +890,7 @@ pub mod wire {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::{Bytes, DeviceSample, Pct, SignalState};
+        use crate::{Bytes, Celsius, DeviceSample, Metrics, Pct, SignalState};
         use std::time::SystemTime;
 
         #[test]
@@ -758,12 +906,17 @@ pub mod wire {
 
         #[test]
         fn from_snapshot_maps_device_fields() {
-            let samples = vec![DeviceSample::new(
-                0,
-                "Mock GPU 0".to_owned(),
+            // One present optional (temperature) and the rest absent, to prove both paths map.
+            let metrics = Metrics::new(
                 Pct::clamped(26),
                 Bytes(5_300_000_000),
                 Bytes(24_000_000_000),
+            )
+            .with_temperature(Some(Celsius(61)));
+            let samples = vec![DeviceSample::new(
+                0,
+                "Mock GPU 0".to_owned(),
+                metrics,
                 SystemTime::UNIX_EPOCH,
             )];
             let wire =
@@ -776,6 +929,8 @@ pub mod wire {
                 (d.index, d.util_pct, d.mem_used_bytes, d.mem_total_bytes),
                 (0, 26, 5_300_000_000, 24_000_000_000)
             );
+            assert_eq!(d.temperature_c, Some(61)); // a present optional maps through
+            assert_eq!(d.fan_pct, None); // an absent optional stays None (serialized as null)
         }
     }
 }
@@ -803,14 +958,8 @@ mod tests {
     }
 
     fn sample(index: u32, util: u8) -> DeviceSample {
-        DeviceSample::new(
-            index,
-            format!("GPU {index}"),
-            Pct::clamped(util),
-            Bytes(1 << 30),
-            Bytes(24 << 30),
-            SystemTime::now(),
-        )
+        let metrics = Metrics::new(Pct::clamped(util), Bytes(1 << 30), Bytes(24 << 30));
+        DeviceSample::new(index, format!("GPU {index}"), metrics, SystemTime::now())
     }
 
     #[test]
@@ -834,9 +983,9 @@ mod tests {
         }
         let d = m.device(0).expect("device 0 present");
         assert_eq!(d.len(), 3); // bounded: oldest dropped
-        let utils: Vec<u8> = d.series().iter().map(|p| p.util.get()).collect();
+        let utils: Vec<u8> = d.series().iter().map(|p| p.metrics.util.get()).collect();
         assert_eq!(utils, vec![2, 3, 4]); // ordered oldest→newest
-        assert_eq!(d.latest().map(|p| p.util.get()), Some(4));
+        assert_eq!(d.latest().map(|p| p.metrics.util.get()), Some(4));
     }
 
     #[test]
@@ -849,7 +998,7 @@ mod tests {
         assert_eq!(
             m.device(1)
                 .and_then(DeviceHistory::latest)
-                .map(|p| p.util.get()),
+                .map(|p| p.metrics.util.get()),
             Some(21)
         );
         assert!(m.device(2).is_none());
@@ -873,5 +1022,43 @@ mod tests {
         assert_send_sync::<DeviceHistory>();
         assert_send_sync::<Point>();
         assert_send_sync::<Series<Point>>();
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Bounded: the series never holds more than `cap`, for any capacity (including 0) and any
+        /// sequence of pushes.
+        #[test]
+        fn series_len_never_exceeds_cap(
+            cap in 0usize..64,
+            pushes in prop::collection::vec(any::<i32>(), 0..256),
+        ) {
+            let mut s = Series::new(cap);
+            for v in &pushes {
+                s.push(*v);
+            }
+            prop_assert!(s.len() <= cap);
+        }
+
+        /// Ordered + wraps: after any sequence of pushes, the series holds exactly the last `cap` values
+        /// pushed, oldest-to-newest.
+        #[test]
+        fn series_keeps_last_cap_in_order(
+            cap in 1usize..64,
+            pushes in prop::collection::vec(any::<i32>(), 0..256),
+        ) {
+            let mut s = Series::new(cap);
+            for v in &pushes {
+                s.push(*v);
+            }
+            let got: Vec<i32> = s.iter().copied().collect();
+            let want: Vec<i32> = pushes.iter().rev().take(cap).rev().copied().collect();
+            prop_assert_eq!(got, want);
+        }
     }
 }

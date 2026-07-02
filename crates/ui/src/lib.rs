@@ -60,11 +60,11 @@ fn device_panel(ui: &mut egui::Ui, device: &DeviceSnapshot, state: &SignalState)
     ui.heading(&device.name);
 
     if let Some(p) = device.latest {
-        ui.label(format!("Utilization: {} %", p.util.get()));
+        ui.label(format!("Utilization: {} %", p.metrics.util.get()));
         ui.label(format!(
             "Memory: {} / {} MiB",
-            p.mem_used.as_mib(),
-            p.mem_total.as_mib()
+            p.metrics.mem_used.as_mib(),
+            p.metrics.mem_total.as_mib()
         ));
     }
     if *state != SignalState::Ok {
@@ -101,23 +101,19 @@ fn util_points(history: &[Point]) -> Vec<[f64; 2]> {
     history
         .iter()
         .enumerate()
-        .map(|(i, p)| [i as f64, f64::from(p.util.get())])
+        .map(|(i, p)| [i as f64, f64::from(p.metrics.util.get())])
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::{Bytes, Pct};
+    use agent_core::{Bytes, Metrics, Pct};
     use std::time::SystemTime;
 
     fn point(util: u8) -> Point {
-        Point::new(
-            SystemTime::UNIX_EPOCH,
-            Pct::clamped(util),
-            Bytes(0),
-            Bytes(0),
-        )
+        let metrics = Metrics::new(Pct::clamped(util), Bytes(0), Bytes(0));
+        Point::new(SystemTime::UNIX_EPOCH, metrics)
     }
 
     #[test]

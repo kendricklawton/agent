@@ -12,10 +12,12 @@ the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, *
 NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
 is still named `agent`; the rename is a pre-Phase-1 task).
 
-> **Status:** the **`core` data model is in place** — typed units, the bounded per-device ring-buffer
-> history, and the `Collector`/`Sink` seams — fed by the **mock** source; `cargo run -p agent -- ps`
-> shows it. `ui`/`cli` are still thin (`gui`/`top` point at their phases — Phase 1 and Phase 3); the real
-> **NVML** source is next. The repo is still named `agent` pending the rename.
+> **Status:** **Phases 0–1 are complete; Phase 2 is underway.** `core` holds the model — typed units, a
+> shared per-sample `Metrics`, the bounded per-device ring buffer, and the `Collector`/`Sink` seams. The
+> **NVML** source is live (with a permanent **mock**), the engine publishes immutable snapshots, the
+> **GUI** shows a live sparkline, and `ps`/`ps --json` are real. `ps --json` now carries the full metric
+> set — utilization, memory, temperature, power, clocks, PCIe, fan (SM occupancy awaits DCGM). Still thin:
+> the `top` TUI (Phase 3). The repo is still named `agent` pending the rename.
 
 ## Commands
 | Task | Command |
@@ -86,10 +88,13 @@ The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Desi
   `app` binary boundary. Errors are values — the no-panic rule above is the hard line.
 - **`unsafe`:** `#![forbid(unsafe_code)]` in `core`/`ui`/`cli`; any FFI `unsafe` is **contained and
   justified** in `collector` (the NVML edge), never above it.
-- **Type the domain:** newtypes for units (`Pct`, `Bytes` now; `Celsius`/`Watts` arrive with temp/power)
-  — not bare numerics across boundaries. Memory is stored lossless as `Bytes` (display MiB via `as_mib`),
-  so the `ps --json` byte values stay stable. `#[non_exhaustive]` on public structs/enums (`DeviceSample`,
-  `Point`, signal states, errors) so the wire contract evolves additively.
+- **Type the domain:** newtypes for units — `Pct`, `Bytes`, `Celsius`, `Milliwatts`, `Megahertz`,
+  `KbPerSec` — not bare numerics across boundaries. Each stores the **lossless, source-native** unit NVML
+  reports (bytes, milliwatts, MHz, KB/s) with display helpers (`as_mib`/`as_watts`), so `ps --json` values
+  stay stable integers — hence `Milliwatts`, not `Watts`. Per-sample metrics live in one `Metrics` value
+  shared by `DeviceSample` and `Point` (add a metric once); optional metrics are `Option<T>` (a source/GPU
+  may not expose one). `#[non_exhaustive]` on public structs/enums (`Metrics`, `DeviceSample`, `Point`,
+  signal states, errors) so the wire contract evolves additively.
 - **Feature flags:** optional sources/sinks (DCGM, Splunk) live behind cargo features; CI builds the
   default set, `--no-default-features`, and the feature powerset.
 - **MSRV is pinned** (`rust-version`) and CI-guarded; bumping it is a deliberate, noted change.

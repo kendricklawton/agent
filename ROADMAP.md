@@ -207,15 +207,17 @@ numbers for a script — both reading the identical `core`.
 - [x] **Decouple cleanly (§0.5):** the engine owns the sample loop and publishes an immutable `Snapshot`
   (`ArcSwap`); GUI and CLI read only `core`; swapping mock↔NVML changes neither frontend. **This wires the
   data-flow contract (R1) and settles the concurrency primitive (R10).**
-- [ ] **Tests:** `core` ring-buffer semantics (bounded, ordered, wraps) — `proptest`; the mock collector
+- [x] **Tests:** `core` ring-buffer semantics (bounded, ordered, wraps) — `proptest`; the mock collector
   drives a headless loop and asserts the model advances; `ps --json` output is golden-tested — all without a GPU.
 
 ## Phase 2 — Single-GPU dashboard
 Turn the one metric into the full real-time picture of one GPU — the first genuinely lovable view.
 **Demo:** a clean, responsive `gui` dashboard for one GPU with live charts and a few minutes of history.
 
-- [ ] Extend `DeviceSample` to the full set: utilization, memory, **temperature, power, clocks (SM/mem),
-  SM occupancy, PCIe throughput, fan**. (NVML covers all of these — and `ps`/`--json` get them for free.)
+- [x] Extend `DeviceSample` to the full set: utilization, memory, **temperature, power, clocks (SM/mem),
+  SM occupancy, PCIe throughput, fan**. (NVML covers all *except SM occupancy* — that's a DCGM metric, so
+  the NVML source reports it as unavailable until DCGM lands; every metric is `Option`. `ps`/`--json` get
+  them for free.)
 - [ ] **Charts that feel good:** smooth live line charts + a rolling few-minutes window; gauges for
   instantaneous values; tasteful layout and typography.
 - [ ] Handle the GPU being absent/asleep gracefully (no panic; a clear signal state).

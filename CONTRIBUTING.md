@@ -98,14 +98,15 @@ pipeline headless. (Opening the `wgpu` GUI window needs a real display, so it's 
 ## The testing ladder
 
 Almost everything runs **headless, with no GPU**, via the mock source; only the top two rungs need real
-hardware. Most changes touch only the bottom two. **Today the suite is `cargo test` over the `core` model
-+ ring buffers; the rungs below are the target that fills in as each surface lands.**
+hardware. Most changes touch only the bottom two. **Today the suite is `cargo test` — the `core` model,
+ring buffers (incl. `proptest`), the NVML→`Metrics` mapping, and the `ps --json` golden; the rungs below
+fill in as each surface lands.**
 
 1. **Unit (headless):** the `core` model + ring buffers, parsers (NVML maps, Ollama `/api/ps`,
    Prometheus text), view-model transforms, alert rules, and sink formats (Prometheus/OTLP) —
-   table-driven against committed golden fixtures. `cargo test`. *Planned (not yet wired):* property
-   tests (`proptest`) for invariants like the ring buffer, and fuzzing (`cargo-fuzz`) for the parsers,
-   which eat external input.
+   table-driven against committed golden fixtures. `cargo test`. Property tests (`proptest`) now cover
+   ring-buffer invariants; *planned (not yet wired):* fuzzing (`cargo-fuzz`) for the parsers, which eat
+   external input.
 2. **View-model / output snapshots:** what each surface *would* draw or emit, without a window — GUI
    view models, the `ratatui` test backend, `ps --json` golden, the Prometheus exposition golden.
    Because every surface is a pure view of `core`, a new metric gets one model test + thin per-surface

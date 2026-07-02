@@ -24,6 +24,8 @@ arc-swap = "1"
 # Wire contract: serde DTOs in `core`; `serde_json` encodes `ps --json` (§0.5 R6).
 serde      = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
+# Property-based testing (dev-only): ring-buffer invariants (.rules testing ladder).
+proptest = "1"
 
 # --- the chosen stack, wired per milestone (see ROADMAP.md / ARCHITECTURE.md). Declared here so the
 #     decisions live in one place; a crate opts in with `dep.workspace = true` when its milestone lands.
