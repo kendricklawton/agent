@@ -1,8 +1,8 @@
-//! `cargo xtask <cmd>` — dev orchestration for the monitor.
+//! `cargo xtask <cmd>` — dev orchestration for the engine.
 //!
 //! `ci` runs the full local gate (fmt, clippy, build, test, feature powerset, deny) — the same checks,
-//! in the same order, that `.github/workflows/ci.yml` runs, stopping at the first failure. No GPU
-//! needed: tests drive the mock collector.
+//! in the same order, that `.github/workflows/ci.yml` runs, stopping at the first failure. No API keys
+//! needed: tests drive the mock adapters.
 
 use std::process::Command;
 

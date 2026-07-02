@@ -1,127 +1,101 @@
 # Architecture
 
-The design of the monitor and the decisions behind it. The staged plan is in
-[`ROADMAP.md`](./ROADMAP.md); the build commands + invariants in [`.rules`](./.rules); how to build and
-contribute in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+The design of the engine and the decisions behind it. The staged plan is in [`ROADMAP.md`](./ROADMAP.md);
+the build commands + invariants in [`.rules`](./.rules); how to build and contribute in
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
-## The shape — one headless engine, many surfaces
+## The shape — one headless engine, two adapter seams, pure-view surfaces
 
-A headless `collector` samples data **sources** and feeds an in-memory model (`core`); **every
-surface — GUI, TUI, one-shot CLI, and the machine sinks (Prometheus / OTLP / Splunk) — only *renders*
-`core`.** No surface talks to NVML, DCGM, Ollama, or Prometheus directly. This is the load-bearing
-invariant: it's what makes the app testable without a screen, demoable without a GPU, scriptable,
-exportable, and remote-capable. If a surface reaches into a data source, the design has broken.
+This is **ports & adapters** (hexagonal architecture). A headless **engine** (`core`) answers questions by
+driving two *ports* — a [`Model`] (an LLM) and a [`DataProvider`] (a data source) — and every **surface**
+(the CLI now, an API later) only *renders* the engine's answer. No surface calls an LLM or a data provider
+directly. The **canonical schema** in the middle is a Domain-Driven-Design *anti-corruption layer*: every
+provider maps its raw API onto it, so a provider's wire format — and its API drift — never leaks inward.
 
 ```
-   data sources                core (the headless engine)         surfaces — human + machine
- ┌──────────────────┐  sample  ┌─────────────────────┐  read    ┌───────────────────────────────┐
- │ NVML  (values)   │ ───────▶ │  device/process     │ ───────▶ │ GUI   wgpu/egui window          │
- │ DCGM  (optional) │          │  snapshots +        │  ├─────▶ │ TUI   `top`  (ratatui)          │
- │ Ollama/vLLM/...  │          │  ring-buffer series │  ├─────▶ │ CLI   `ps --json`  (one-shot)   │
- │ mock  (no GPU)   │          │  + inference join   │  └─────▶ │ Sinks Prometheus · OTLP · Splunk │
- └──────────────────┘          └─────────────────────┘          └───────────────────────────────┘
-   (remote hosts, Phase 10, are just another source feeding the same model)
+   adapters (ports)              core (the headless engine)          surfaces
+ ┌──────────────────────┐  plan ┌───────────────────────────┐ read ┌──────────────────────┐
+ │ Model:  claude/…/mock │◀────▶ │  plan → fetch → compute →  │ ────▶ │ CLI  ask (+ --json)   │
+ │ Data:   polygon/…/mock│◀────▶ │  ground; canonical schema  │ ────▶ │ API  (later)          │
+ └──────────────────────┘ fetch └───────────────────────────┘       └──────────────────────┘
+   raw APIs mapped to the       the engine only ever sees the        every surface renders the
+   canonical schema here        canonical schema (drift contained)   engine's grounded Answer
 ```
 
-The flow is one-directional: **`collector` → `core` → {GUI, TUI, CLI, sinks}`**. The **engine** owns one
-sampling loop — it calls the collector's synchronous `sample()` at a sane interval (the collector owns no
-thread or clock), timestamps the readings, and appends them to `core`'s bounded, fixed-capacity ring
-buffers; surfaces read an immutable snapshot and render or emit it. Adding a metric means updating the
-model **once** and the thin renderers/sinks — never duplicating logic, never a GUI-only metric (frontend
-parity). *(The full data-flow contract — snapshot publication, the seam traits, signal states — is pinned
-in [`ROADMAP.md`](./ROADMAP.md) §0.5.)*
+The flow is one-directional: **question → `Model` plans a structured query → `DataProvider` returns
+canonical data → engine computes the metric → `Model` grounds the answer**. A new LLM or data source is a
+new adapter and **nothing else** — the core depends on neither a specific model nor a specific provider.
 
 ## The crates
 
-> Scaffolded in **Phase 0** — not all exist or are full yet; this is the target layout.
-
 | Crate | Role |
 |-------|------|
-| `crates/core` | The data model: device/process snapshots, ring-buffer time series, the `Collector` + `Sink` traits. **The spine.** |
-| `crates/collector` | Source implementations: `nvml`, `dcgm` (optional, richer/MIG), the inference scraper (Phase 6), and `mock` |
-| `crates/ui` | GUI frontend (lib): `wgpu`/`egui` views & widgets — charts, gauges, process table, GPU grid |
-| `crates/cli` | Terminal frontend (lib): one-shot `ps`/`--json` + the live `top` TUI (`ratatui`) |
-| `crates/export` | Machine sinks (lib): Prometheus, OTLP, Splunk — wired in Phase 9; the `Sink` trait lives in `core` |
-| `crates/app` | The single binary: subcommand dispatch (`gui`/`top`/`ps`; `serve` in Phase 10), wires `collector → core → {ui｜cli｜sinks}` |
-| `xtask` | Build/dev orchestration (dev-only, never shipped) |
+| `crates/core` | The engine: the `Model` + `DataProvider` traits, the canonical schema (`Bar`, `DataQuery`, `Metric`, `Answer`), `Capabilities`, and the pure `compute()`. **The spine.** |
+| `crates/models` | LLM adapters behind `Model`: `mock` now; `claude`, then `openai`/local, next. |
+| `crates/providers` | Data adapters behind `DataProvider`: `mock` now; `polygon`, then `kalshi`/custom, next. |
+| `crates/cli` | Terminal frontend (lib): the one-shot `ask` (+ `--json`). |
+| `crates/app` | The single binary: subcommand dispatch, wires a model + a provider into the engine. |
+| `xtask` | Build/dev orchestration (dev-only, never shipped). |
 
 ## Design decisions (the *why*)
 
 The load-bearing, hard-to-reverse choices. Record new ones here when you make them.
 
-1. **Native single binary, no Electron.** Ship one self-contained Rust binary — GUI via `wgpu`, TUI via
-   `ratatui` — no web stack, fast cold start, statically linkable where the driver allows. *Why:* craft
-   and startup speed are the reason to build this over a web dashboard. *Rejected:* Electron/Tauri
-   (heavy, slow start); separate GUI and CLI binaries.
-2. **Headless engine, pure-view surfaces.** A headless `collector` feeds `core`; every surface only
-   renders `core` and never calls a data source. *Why:* testable headless, demoable with no GPU,
-   scriptable, exportable, remote-capable; the parsing/trust surface lives in one place. *Rejected:*
-   each surface querying NVML itself (untestable, duplicated, can't go remote).
-3. **Two first-class frontends, one binary.** GUI and CLI/TUI at parity, dispatched by subcommand
-   (Docker/Ollama DX): `gui` (default) · `top` · `ps`/`ps --json` · `serve` (Phase 10). The CLI is a real
-   contract — stable `--json` field names, exit codes, `--watch` streaming — not a toy.
-4. **Frontend stacks: `egui`/`wgpu` (GUI) + `ratatui` (TUI).** Immediate-mode suits live telemetry and
-   ships fast. *Deferred:* bespoke `wgpu`/GPUI for hero visualizations (must not block `v0.1.0`).
-5. **GPU source: NVML + DCGM + mock, behind one trait.** NVML (`nvml-wrapper`, `dlopen`, no root) is the
-   source of truth; DCGM optional for richer counters and MIG; a permanent **mock** so everything
-   builds/tests/demos with no GPU. The `collector` trait is vendor-neutral — AMD/ROCm and Intel are new
-   implementations, nothing above changes. *Rejected:* shelling out to `nvidia-smi`; DCGM-only.
-6. **Integrate, don't reimplement (the `Sink` seam).** Exporters — Prometheus, OTLP, Splunk (Phase 9) — are
-   *machine-facing pure views of `core`*, the mirror of the human frontends. We expose data; we never
-   become a dashboard, a time-series database, or an alerting platform. The **anti-platform** move:
-   plug into the user's stack, don't rebuild it.
-7. **Release pipeline from day one; keyless signing.** A tag-triggered workflow builds (from the committed
-   `Cargo.lock`, `--locked`), checksums, **keyless-signs** (sigstore `cosign` over GitHub OIDC — no
-   long-lived private key to manage or leak), and publishes — wired in Phase 0, before there's anything to
-   ship. Phase previews tag `0.1.0-alpha.N`; the final is `v0.1.0`. *Why:* deferring release/packaging to
-   the end is the classic way to discover signing and packaging breaks when they're most expensive — so we
-   exercise the whole path on the first preview tag. *Rejected:* long-lived GPG/private keys; packaging only at 1.0.
+1. **Two trait seams — `Model` and `DataProvider` (ports & adapters).** The engine drives two ports; every
+   adapter is swappable. *Why:* pluggable models/sources, testable headless, vendor-neutral. *Rejected:* a
+   surface calling an LLM or provider directly (untestable, coupled, un-swappable).
+2. **A canonical, versioned schema is the anti-corruption layer.** Providers map their raw API → the
+   engine's canonical types; the engine never sees raw. *Why:* provider APIs differ and change — contain
+   the blast radius to one adapter, and catch drift with per-adapter **contract tests over recorded
+   fixtures** in CI. *Rejected:* passing provider-native shapes through the core.
+3. **Adapters declare capabilities.** Each `DataProvider` states what it can serve; the engine only plans
+   queries a provider can answer. *Why:* fail fast and clearly, not deep in a fetch.
+4. **Grounded answers, not advice.** The engine answers from the data it fetched and reports the provenance
+   (model, provider, value, bars used); it never invents numbers. *Why:* a wrong number is worse than "no
+   data" — this is a **research/analysis** tool, not financial advice.
+5. **Mock-first, keyless by default.** A permanent mock model + mock provider make everything build, test,
+   and demo with no API keys, and are the basis for deterministic **known-answer evals**. *Why:* fast,
+   offline, reproducible; the same discipline that keeps CI green without secrets.
+6. **Headless engine, pure-view surfaces.** The CLI (and any future API) render the engine's `Answer` and
+   nothing else. *Why:* one place to test, one place the trust/parsing surface lives.
+7. **LLM via tool-calling / structured output.** The `Model` turns NL into a *structured* `Plan` (a tool
+   call), not free text the engine has to parse. *Why:* reliability and testability of the NL→query step.
+8. **Open-core, one-way dependency.** The engine, the adapter SDK, and the reference adapters are OSS;
+   hosted/multi-source/team features build *on* the core and never leak back into it. *Why:* the core stays
+   clean and self-hostable; we sell the layer above it, not a crippled core.
+9. **Release pipeline from day one; keyless signing + SBOM.** A tag-triggered workflow builds from the
+   committed `Cargo.lock` (`--locked`), checksums, generates an SBOM, and **keyless-signs** (sigstore
+   `cosign` over GitHub OIDC — no long-lived key), then verifies before publishing. *Why:* exercise the
+   whole packaging/signing path before there's anything to ship.
 
-Unprivileged userspace — no root, no kernel modules. For real data you need a GPU + its driver; the
-**mock** source works everywhere with none.
+## Platform & trust surface
 
-- **GPU:** NVIDIA via **NVML** is first-class (current target). **DCGM** optional (richer counters +
-  MIG). **AMD/ROCm** and **Intel** are post-1.0 behind the `collector` trait. The **mock** source is
-  permanent.
-- **OS:** **Linux `x86_64`** first-class; **`arm64`** intended (Graviton/Jetson); **macOS (Metal)** and
-  **Windows** post-1.0 behind the trait.
-- **Inference runtimes (Phase 6):** **Ollama** (`/api/ps`, the first integration), **vLLM / Triton / TGI**
-  (Prometheus). Optional, auto-discovered or opt-in.
-- **Exporters (Phase 9):** **Prometheus** `/metrics`, **OTLP** (→ Grafana/Datadog/Honeycomb/any OTel
-  collector), **Splunk** (OTLP or HEC). Optional, composable with the frontends.
-- **GUI vs. headless:** the GUI needs a display + a `wgpu`-capable GPU (or a software fallback); the
-  `top` TUI and `ps` run anywhere, including over SSH on headless boxes.
+Unprivileged userspace — no root. The engine's real-world touchpoints are **outbound HTTP** to your chosen
+LLM and data providers (using **your API keys, from env/config only**) and **parsing their responses**.
+
+- **Rust, stable**, one host target (Linux `x86_64` first; others follow the same pure-Rust build).
+- **Models:** any LLM behind the `Model` trait — Claude first, then OpenAI/local.
+- **Data:** any source behind `DataProvider` — Polygon first, then Kalshi/prediction markets and custom.
+- **Secrets** never touch the repo, logs, or fixtures. The **mock** adapters need no keys and no network.
 
 ## Extension model & non-goals
 
-How you build *on* agent — and the lines we won't cross. All three fall out of the headless-engine split.
-
-- **Extend via the two traits, not a public API.** The crates are library-shaped (`core`/`collector`/`ui`/
-  `cli`/`export` are libs; `app` is a thin shell), so the engine *is* a library internally. But the
-  **committed** extension surface is the **`Collector` and `Sink` traits** plus the **wire contracts**
-  (`ps --json`, `/metrics`, OTLP) — **not** an embeddable Rust API. A new GPU vendor is a `Collector`; a
-  new exporter is a `Sink`; a consumer reads the wire contracts in any language. `agent-core`'s Rust API
-  is **not** SemVer-guaranteed pre-1.0; promoting it to a supported embeddable library is a deliberate
-  post-1.0 decision, only if real demand appears. *Why:* a public API is a heavy SemVer/maintenance
-  burden, and "integrate, don't reimplement" means people consume our **data**, not our crates.
-- **Daemon mode is opt-in and additive — never the default.** agent is local-first and zero-config:
-  launch it, see your GPUs, no service required. Running headless as a background worker — the
-  exporter (`/metrics` alongside any mode, Phase 9) or the `serve` collector (the Ollama-style invisible
-  daemon, managed by `systemd`/a container, Phase 10) — is purely additive; disabling it leaves a fully useful
-  foreground tool. *Why:* never-a-hog and local-first; a monitor you must stand up as a service has lost
-  the plot.
-- **Non-goals (the anti-platform line).** agent is **not** a time-series database, a dashboard, or an
-  alerting platform — it *exposes* data to the stack you already run (Phase 9). It is **not** a
-  general-purpose GPU-telemetry library — it's an application with a trait-based extension SDK. And it is
-  **not** a hosted/SaaS product: **local-first and peer-to-peer, nothing leaves your infrastructure
-  without explicit opt-in.** Any cloud/SaaS variant would be a **separate project in its own repo** — never
-  this one. If a feature starts to look like storage, dashboards, a public engine API, or a hosted backend,
-  it's on the wrong side of the line.
+- **Extend via the two traits + the wire contract, not an embeddable API.** The crates are library-shaped,
+  but the *committed* extension surface is the **`Model` and `DataProvider` traits** plus the **`ask`
+  wire contract** (and the API later) — not `agent-core`'s Rust API, which is not SemVer-guaranteed pre-1.0.
+  A new model or source is an adapter; a consumer reads the wire contract in any language.
+- **Non-goals.** Not a trading bot and not financial advice — it *analyzes* and *cites*, it doesn't
+  recommend trades. Not a market-data vendor — it reads sources you're licensed for and never redistributes
+  their data. Not a dashboard or a time-series database. It is open-core and self-hostable; the commercial
+  layer is additive.
 
 ## Invariants
 
 The non-negotiables live in [`.rules`](./.rules) (Invariants) and the
 [Architectural invariants](./ROADMAP.md) section of the roadmap. In short: the headless-engine/pure-view
-split, two first-class frontends at parity, native/no-Electron/single-binary, integrate-don't-reimplement
-(sinks are pure views), local-first/zero-config, never-a-hog, inference-awareness as the wedge,
-vendor-neutral behind a trait, and the permanent mock source.
+split, the two trait seams, the canonical schema as the drift-defeating anti-corruption layer, capability
+descriptors, contract-tests-in-CI, grounded-not-advice, mock-first/keyless, secrets-out-of-repo, and the
+one-way open-core boundary.
+
+[`Model`]: ./crates/core/src/lib.rs
+[`DataProvider`]: ./crates/core/src/lib.rs

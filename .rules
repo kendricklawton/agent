@@ -1,113 +1,97 @@
-# .rules — GPU & inference monitor (OSS)
+# .rules — a natural-language data query engine (OSS)
 
-> **Single source of truth for this repo — read this first.** Humans and AI assistants (Claude,
-> Gemini, Codex, …) follow it; `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` all point here. Keep it
-> **concise and current**: the *plan* lives in [`ROADMAP.md`](./ROADMAP.md), the *why* in
+> **Single source of truth for this repo — read this first.** Humans and AI assistants (Claude, Gemini,
+> Codex, …) follow it; `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md` all point here. Keep it **concise and
+> current**: the *plan* lives in [`ROADMAP.md`](./ROADMAP.md), the *why* in
 > [`ARCHITECTURE.md`](./ARCHITECTURE.md), the *how-to* in [`CONTRIBUTING.md`](./CONTRIBUTING.md). Don't duplicate them here.
 
 ## What this repo is
-An **open-source, Apache-2.0**, native **GPU & AI-inference monitor** written in **Rust** — a single
-binary with **two first-class frontends**: a GPU-accelerated **GUI** *and* a terminal **CLI/TUI**. In
-the spirit of Zed/Ghostty (native craft) and Ollama (DX): fast, single-binary, **no Electron**.
-NVIDIA/NVML first; inference-aware (Ollama/vLLM/Triton) is the wedge. **Working name: TBD** (the repo
-is still named `agent`; the rename is a pre-Phase-1 task).
+An **open-source, Apache-2.0**, **modular query engine** written in **Rust**: ask a question in **natural
+language** and get an answer **grounded in real data**, by plugging in **any LLM** (Claude, OpenAI, a local
+or custom model) and **any data provider** (Polygon for markets, a custom source; prediction markets like
+Kalshi later) behind two small traits. **Open-core:** the engine, the adapter SDK, and reference adapters
+are OSS; hosted / multi-source / team features are additive commercial layers, never bolted into the core.
+**Working name: TBD** (the repo is still named `agent`; the rename is an early task).
 
-> **Status:** **Phases 0–1 are complete; Phase 2 is underway.** `core` holds the model — typed units, a
-> shared per-sample `Metrics`, the bounded per-device ring buffer, and the `Collector`/`Sink` seams. The
-> **NVML** source is live (with a permanent **mock**), the engine publishes immutable snapshots, the
-> **GUI** shows a live sparkline, and `ps`/`ps --json` are real. `ps --json` now carries the full metric
-> set — utilization, memory, temperature, power, clocks, PCIe, fan (SM occupancy awaits DCGM). Still thin:
-> the `top` TUI (Phase 3). The repo is still named `agent` pending the rename.
+> **The one-liner:** *glue any model to any data source and query it in plain English* — you bring the
+> APIs, the engine makes them speak the same language.
+
+## The shape
+A natural-language question → the **`Model`** adapter (an LLM) turns it into a structured query → the
+**`DataProvider`** adapter fetches and returns data in the engine's **canonical schema** → the `Model`
+composes an answer grounded in that data. Every surface (CLI now, an API later) is a **pure view** of the
+engine; nothing downstream ever sees a provider's raw API shape.
+
+> **Status:** early. The engine's two seams (`Model` + `DataProvider`) and the **mock** adapters land
+> first, so everything builds, tests, and demos **with no API keys**; the real Claude + Polygon adapters
+> come next.
 
 ## Commands
 | Task | Command |
 |------|---------|
 | Build | `cargo build` |
-| Run the GUI (default) | `cargo run -p agent -- gui` |
-| Run the live TUI | `cargo run -p agent -- top` |
-| One-shot snapshot (scriptable) | `cargo run -p agent -- ps` · `… -- ps --json` |
-| Run with **no GPU** (mock source) | append `--mock` (or `AGENT_SOURCE=mock`) |
+| Ask a question | `cargo run -p agent -- ask "…"` |
+| Run with **no API keys** (mock model + mock provider) | append `--mock` |
+| Machine output | `cargo run -p agent -- ask "…" --json` |
 | Full local gate before pushing | `cargo xtask ci` (fmt + clippy + build + test + feature powerset + deny) |
-| Test (headless, no GPU needed) | `cargo test` |
-| Lint — must be clean | `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all --check` |
-| Supply chain | `cargo deny check` |
+| Test (offline, uses recorded fixtures) | `cargo test` |
 
-- **Stable Rust, one host target.** No nightly, no cross-compile, no `sudo`, no codegen step — that
-  was the old eBPF project. NVML needs **no root**; the **mock collector** means every command works
-  with no GPU and no driver present.
+- **Stable Rust, one workspace.** Live model/provider calls hit HTTP APIs, but the **mock** adapters mean
+  every command works offline with no keys and no network.
 
 ## Stack & layout
-- **Rust** (stable). **GUI:** `egui` on `wgpu`. **TUI:** `ratatui`. **GPU values:** `nvml-wrapper`
-  (NVML); **DCGM** optional (richer/MIG). **Inference:** Ollama `/api/ps`, vLLM/Triton Prometheus.
-- Model after: `nvtop`/`btop` (the monitor), **Zed**/**Ghostty** (native craft), **Ollama** (DX).
+- **Rust** (stable). **LLMs:** provider HTTP APIs (**Claude first**). **Data:** provider HTTP APIs
+  (**Polygon first**). Adapters are `reqwest`-based and feature-gated.
 ```
-crates/core       data model: snapshots, ring-buffer series, the collector + sink traits. The spine.
-crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
-crates/ui         GUI frontend (lib): wgpu/egui — charts, gauges, process table, GPU grid
-crates/cli        terminal frontend (lib): one-shot ps/--json + the live `top` TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk — wired in Phase 9 (the `Sink` trait is in core)
-crates/app        the single binary: subcommand dispatch (gui/top/ps; serve in Phase 10), wires collector → core → {ui|cli|sinks}
+crates/core       the engine: canonical schema, the Model + DataProvider traits, the NL→query→answer flow
+crates/models     LLM adapters: claude, (openai/local later), mock
+crates/providers  data adapters: polygon, (kalshi/custom later), mock
+crates/cli        terminal frontend (lib): `ask` (+ `--json`)
+crates/app        the single binary: subcommand dispatch, wires model + provider → core → surface
 xtask             build/dev orchestration (dev-only, never shipped)
 ```
 
 ## Invariants — do not trade these away
-The *rule* is here; the *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
-- **Headless engine; every surface is a pure view.** `collector` → `core`; the GUI, TUI, one-shot CLI,
-  and machine sinks **only render `core`** — no surface calls NVML/DCGM/Ollama/Prometheus directly.
-  This is what keeps the app testable headless, demoable without a GPU, scriptable, exportable, and
-  remote-capable.
-- **Two first-class frontends, one binary.** A native GUI *and* a CLI/TUI, at parity — every metric in
-  all surfaces. The CLI is real (stable `--json`, exit codes, `--watch`), not a toy.
-- **Native, no Electron, single binary.** GUI via `wgpu`, TUI via `ratatui`; fast cold start; static
-  where the driver allows. The craft bar is the reason to build this over a web app.
-- **Integrate, don't reimplement.** Exporters (Prometheus/OTLP/Splunk, Phase 9) are machine-facing pure
-  views of `core` — we expose data, never store/dashboard/alert. Plug into the user's stack.
-- **Local-first, zero-config.** Launch → local GPUs (and any running Ollama/vLLM) visible, no
-  server/account/config. Exporters (Phase 9), remote (Phase 10), and persistence (Phase 7) are additive.
-- **A monitor must never be a hog.** Sample sanely, **render on change** (idle when backgrounded),
-  bound every buffer, and surface our own CPU/GPU/RAM. The tool that watches usage cannot cause it.
-- **Inference awareness is the wedge** — Ollama-first model attribution + serving KPIs are why this
-  exists; raw hardware counters are commodity.
-- **Vendor-neutral behind a trait.** NVIDIA/NVML first, but `core`/`ui`/`cli` never assume NVIDIA — a
-  new GPU vendor is a new `collector`, nothing else. The **mock** source is permanent.
+The *why* is in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
+- **Headless engine; every surface is a pure view.** The CLI (and any future API) only render the engine's
+  output — they never call an LLM or a data provider directly.
+- **Two trait seams — `Model` and `DataProvider`.** A new LLM or a new data source is a **new adapter and
+  nothing else**. The core depends on neither a specific model nor a specific provider.
+- **A canonical, versioned schema defeats API drift.** Providers map their raw API → the engine's canonical
+  types; the engine and the LLM only ever see canonical data. A provider's breaking change is contained to
+  *its* adapter — never leaks into the core or a surface.
+- **Adapters declare capabilities.** Each adapter states what it can serve (which data kinds, which
+  operations), so the engine only plans queries a provider can actually answer.
+- **Drift is caught in CI, not in prod.** Every adapter has **golden/contract tests over recorded
+  fixtures** (deterministic, offline); a provider or LLM contract change fails CI.
+- **Grounded, not advice.** The engine answers from returned data and cites what it used; it is a
+  **research/analysis** tool, **not financial advice**. No fabricated numbers.
+- **Keyless by default.** The permanent **mock** model + mock provider make the whole thing build, test,
+  and demo with no API keys — a permanent, first-class pair of adapters.
+- **The CLI/API is a contract.** `ask --json` has stable field names + exit codes — additive changes only,
+  golden-tested.
 
 ## Code conventions
-- `cargo fmt` + `cargo clippy` clean. **No `unwrap`/`expect`/`panic!` outside tests** (workspace
-  `deny` lints; `clippy.toml` re-allows them in tests). All crates are stable-Rust, `std`.
-- **Frontend parity:** adding a metric means updating the model once and the three thin renderers —
-  never duplicating logic, never a GUI-only metric. A GUI-only metric is a design smell.
-- **Bounded everything:** ring buffers are fixed-capacity; caches (PID→name) are pruned; nothing grows
-  with uptime. Sampling runs on a background task at a sane interval; the UI never blocks on a sample.
-- **Render on change, not on a spin loop:** adaptive frame rate in the GUI; low redraw cost in the TUI
-  (don't spin a remote CPU over SSH).
-- **The CLI is a contract:** `ps --json` has stable field names + exit codes; `--watch` streams JSON
-  lines. Treat it like an API — additive changes only.
-- **Frameworks are decisions:** GUI `egui`/`wgpu`, TUI `ratatui`, GPU `nvml-wrapper` — see
-  [`ARCHITECTURE.md`](./ARCHITECTURE.md); don't swap them casually.
-- **Error model:** `thiserror` for the library crates (`core`/`collector`/`export`), `anyhow` only at the
-  `app` binary boundary. Errors are values — the no-panic rule above is the hard line.
-- **`unsafe`:** `#![forbid(unsafe_code)]` in `core`/`ui`/`cli`; any FFI `unsafe` is **contained and
-  justified** in `collector` (the NVML edge), never above it.
-- **Type the domain:** newtypes for units — `Pct`, `Bytes`, `Celsius`, `Milliwatts`, `Megahertz`,
-  `KbPerSec` — not bare numerics across boundaries. Each stores the **lossless, source-native** unit NVML
-  reports (bytes, milliwatts, MHz, KB/s) with display helpers (`as_mib`/`as_watts`), so `ps --json` values
-  stay stable integers — hence `Milliwatts`, not `Watts`. Per-sample metrics live in one `Metrics` value
-  shared by `DeviceSample` and `Point` (add a metric once); optional metrics are `Option<T>` (a source/GPU
-  may not expose one). `#[non_exhaustive]` on public structs/enums (`Metrics`, `DeviceSample`, `Point`,
-  signal states, errors) so the wire contract evolves additively.
-- **Feature flags:** optional sources/sinks (DCGM, Splunk) live behind cargo features; CI builds the
+- `cargo fmt` + `cargo clippy` clean. **No `unwrap`/`expect`/`panic!` outside tests** (workspace `deny`
+  lints; `clippy.toml` re-allows them in tests). Stable Rust, `std`.
+- **Error model:** `thiserror` in the library crates (`core`/`models`/`providers`), `anyhow` only at the
+  `app` boundary. Errors are values; a failed model/provider call degrades to a clear error, never a panic.
+- **`unsafe`:** `#![forbid(unsafe_code)]` across the workspace (no FFI here — everything is HTTP + serde).
+- **Type the domain:** newtypes and typed canonical schema for entities (instruments, quotes, bars, events,
+  …) — never bare strings/floats across the trait boundary. `#[non_exhaustive]` on public types so the
+  schema and the wire contract evolve additively.
+- **Secrets:** API keys come from **env/config only** — never committed, never logged, never in fixtures.
+- **Feature flags:** each real adapter (claude, polygon, …) lives behind a cargo feature; CI builds the
   default set, `--no-default-features`, and the feature powerset.
-- **MSRV is pinned** (`rust-version`) and CI-guarded; bumping it is a deliberate, noted change.
+- **MSRV is pinned** (`rust-version`) and CI-guarded.
 
 ## Repo etiquette
-- Commits: one logical change each, imperative subject. **Never add AI co-author / attribution
-  trailers.** Never commit secrets or fetched/generated data.
-- Work in phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release. Close each with a tag +
-  a working demo + green CI, and don't start one until the prior is green. Record any significant,
-  hard-to-reverse decision in [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions).
+- Commits: one logical change each, imperative subject. **Never add AI co-author / attribution trailers.**
+  **Never commit secrets or fetched/generated data** (recorded fixtures are curated + license-checked).
+- Work in phases (Phase 0 → …) that ladder to `v0.1.0`. Close each with a tag + a working demo + green CI.
+  Record significant, hard-to-reverse decisions in [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Cross-refs
-- The plan & phases: [`ROADMAP.md`](./ROADMAP.md) — authoritative; don't restate it here.
-- Design, decisions & platform support: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Contributor setup & test tiers: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-- Security: [`SECURITY.md`](./SECURITY.md)
-- License: **Apache-2.0** ([`LICENSE`](./LICENSE))
+- The plan & phases: [`ROADMAP.md`](./ROADMAP.md) — authoritative.
+- Design & decisions: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · Contributor setup: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+- Security: [`SECURITY.md`](./SECURITY.md) · License: **Apache-2.0** ([`LICENSE`](./LICENSE))

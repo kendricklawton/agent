@@ -1,5 +1,5 @@
-# CI — fmt, clippy, build, test, and supply-chain. Needs NO GPU: tests drive the mock collector, so
-# the whole pipeline runs headless on a stock runner. See CONTRIBUTING.md.
+# CI — fmt, clippy, build, test, and supply-chain. Needs no network or API keys: tests drive the mock
+# adapters, so the whole pipeline runs offline on a stock runner. See CONTRIBUTING.md.
 name: CI
 
 on:
@@ -46,7 +46,7 @@ jobs:
       - name: Build
         run: cargo build --locked
 
-      - name: Test (headless via the mock collector — no GPU)
+      - name: Test (offline via the mock adapters — no API keys)
         run: cargo test --locked
 
   features:
@@ -61,7 +61,7 @@ jobs:
         with:
           tool: cargo-hack
       # Every feature combination (and --no-default-features) must compile. Trivial today — no features
-      # are defined yet — but it guards the DCGM/Splunk/etc. features the moment they land.
+      # are defined yet — but it guards the optional model/provider adapter features the moment they land.
       # No --locked here: --no-dev-deps rewrites the manifests (stripping dev-deps like proptest), which
       # would force a lock update that --locked forbids. Lock freshness is already gated by the check job.
       - name: Check the feature powerset

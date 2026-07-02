@@ -1,72 +1,70 @@
 # agent *(name TBD)*
 
-A native, open-source **GPU & AI-inference monitor** — written in **Rust**, with both a
-GPU-accelerated **GUI** and a terminal **CLI/TUI**. See what your GPUs and inference servers are
-actually doing: in a gorgeous window on your desk, live in your terminal over SSH, as `--json` you
-pipe into a script, or via a `/metrics` endpoint your Prometheus already scrapes.
+**Ask your data questions in plain English.** A modular, open-source engine in **Rust** that lets you plug
+in **any LLM** and **any data provider** and query them together — you bring the APIs, the engine makes
+them speak the same language and answers with real, cited data.
 
-> **Status:** in active development — NVIDIA/NVML on Linux first. There's no published binary yet; build
-> from source ([`CONTRIBUTING.md`](./CONTRIBUTING.md)). The repo is still named `agent` pending a rename.
+> **Status:** early, in active development — pivoting an earlier codebase into this engine. There's no
+> published binary yet; build from source ([`CONTRIBUTING.md`](./CONTRIBUTING.md)). The repo is still named
+> `agent` pending a rename.
 
 ## Why
-`nvidia-smi` is a CLI snapshot; `nvtop` is a TUI with no history or inference awareness;
-`dcgm-exporter` + Grafana is a server you stand up. None of them is *one fast, native, inference-aware
-tool that's equally good in a window and in a terminal*. Two things set this apart:
+Every "ask-your-data" tool is welded to one model and one data source. Swap the LLM or the data provider and
+you rewrite everything — and when a provider changes its API, your app breaks in production. This engine
+makes both **pluggable** and puts a **stable schema** between you and every provider, so:
 
-- **Native craft, two ways.** A `wgpu`-rendered GUI *and* a `ratatui` TUI in one single binary —
-  instant startup, buttery real-time, no Electron. It should feel good to leave open.
-- **Inference-workload awareness.** Not just hardware counters — attribute GPU use to the
-  **process → model/server** and surface **tokens/sec, queue depth, KV-cache** from
-  **Ollama / vLLM / Triton**. The part `nvtop` structurally can't do.
+- **Bring any model.** Claude, OpenAI, or a local/custom model — behind one `Model` trait.
+- **Bring any data.** Polygon for markets, a custom source, prediction markets (e.g. Kalshi) later — behind
+  one `DataProvider` trait.
+- **Survive API drift.** Providers map their raw API to the engine's **canonical schema**; a provider's
+  breaking change is contained to its adapter and caught by tests, not by your users.
 
 ## What it does
-- **GUI** (`gui`): live charts, gauges, a sortable process table, a multi-GPU grid, inference panels.
-- **TUI** (`top`): the same real-time view in your terminal — perfect for headless GPU boxes over SSH.
-- **CLI** (`ps`, `ps --json`): a one-shot, scriptable snapshot of devices and processes.
-- **Per-process attribution**, **multi-GPU + MIG**, **inference KPIs** (Ollama-first), **history +
-  alerts**, and optional **remote/multi-host** monitoring from one screen.
-- **Exporters** (`/metrics`): plug the same data into the stack you already run — **Prometheus**,
-  **OTLP** (Grafana/Datadog/Honeycomb), **Splunk** — without it ever becoming a dashboard or database.
-
-Every surface — GUI, TUI, CLI, and the exporters — is a pure view of one **headless engine**
-(`collector` → `core`), so every metric is available everywhere, and the whole thing builds, tests,
-and demos with **no GPU present** (a mock data source).
+```
+you ask ─▶ [ LLM plans a query ] ─▶ [ data provider returns canonical data ] ─▶ [ LLM answers, grounded ]
+```
+- **CLI** (`ask`, `ask --json`): a one-shot, scriptable natural-language query over your data.
+- **Grounded answers:** the engine answers from the data it actually fetched and says what it used — it's a
+  **research/analysis** tool, not financial advice.
+- **Runs with no keys:** a built-in **mock** model + mock provider mean it builds, tests, and demos with no
+  API keys and no network.
 
 ## Usage
 ```
-agent              # launch the GUI (default)
-agent top          # live TUI in the terminal (Phase 3)
-agent ps           # one-shot snapshot table
-agent ps --json    # ... as JSON, for scripts
-agent serve        # thin headless collector, for remote/multi-host monitoring (Phase 10)
+agent ask "what was NVDA's average close last week?"     # uses your configured model + provider
+agent ask "…" --json                                     # structured output for scripts
+agent ask "…" --mock                                     # no API keys: mock model + mock data
 ```
 
-## Stack
-Rust · GUI [`egui`](https://github.com/emilk/egui) on [`wgpu`](https://wgpu.rs) ·
-TUI [`ratatui`](https://ratatui.rs) · GPU [`nvml-wrapper`](https://docs.rs/nvml-wrapper) (NVML),
-DCGM optional. NVIDIA/Linux is the first-class target; AMD/Intel and macOS sit behind the same
-vendor-neutral collector trait.
+## How it fits together
+Every surface is a pure view of one **headless engine**: `model + provider → core → {cli | api}`. A new LLM
+or data source is a **new adapter and nothing else** — the core never depends on a specific vendor, and
+nothing downstream sees a provider's raw API.
 
 ## Layout
 ```
-crates/core       data model: snapshots, ring-buffer series, the collector + sink traits
-crates/collector  sources: nvml, dcgm (optional), inference scraper, mock
-crates/ui         GUI frontend (lib): wgpu/egui views & widgets
-crates/cli        terminal frontend (lib): one-shot ps/--json + the live top TUI (ratatui)
-crates/export     machine sinks (lib): prometheus, otlp, splunk
-crates/app        the single binary: subcommand dispatch, wires collector → core → {ui | cli | sinks}
+crates/core       the engine: canonical schema, the Model + DataProvider traits, the query flow
+crates/models     LLM adapters (claude, mock, …)
+crates/providers  data adapters (polygon, mock, …)
+crates/cli        terminal frontend: `ask` (+ `--json`)
+crates/app        the single binary: wires model + provider → core → surface
 xtask             build orchestration (dev-only)
 ```
 
+## Open core
+The **engine, the adapter SDK, and the reference adapters are open source** (Apache-2.0). Hosted,
+multi-source, and team features are additive commercial layers — they build *on* the OSS core, never
+replace it.
+
 ## Security
-Report vulnerabilities **privately** — see [`SECURITY.md`](./SECURITY.md). The monitor is an
-unprivileged, read-mostly tool (NVML needs no root); the notable surfaces are the optional remote
-collector and parsing data from inference endpoints.
+API keys live in your environment/config — never committed, never logged. Report vulnerabilities privately;
+see [`SECURITY.md`](./SECURITY.md). The notable surfaces are the outbound HTTP calls to your chosen model
+and data providers, and parsing their responses.
 
 ## License
 [Apache-2.0](./LICENSE).
 
 ---
-**Build it & contribute:** [`CONTRIBUTING.md`](./CONTRIBUTING.md). The invariants and agent guidance
-live in [`.rules`](./.rules); the design in [`ARCHITECTURE.md`](./ARCHITECTURE.md); the staged build
-plan in [`ROADMAP.md`](./ROADMAP.md).
+**Build it & contribute:** [`CONTRIBUTING.md`](./CONTRIBUTING.md). The invariants and agent guidance live in
+[`.rules`](./.rules); the design in [`ARCHITECTURE.md`](./ARCHITECTURE.md); the staged plan in
+[`ROADMAP.md`](./ROADMAP.md).

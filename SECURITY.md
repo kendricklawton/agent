@@ -1,18 +1,17 @@
 # Security Policy
 
-This is a native **GPU & inference monitor** — an **unprivileged, read-mostly** desktop/CLI tool. It
-reads local GPU metrics via **NVML** (no root, no special capabilities), reads `/proc` for process
-names, optionally scrapes **local inference endpoints** (Ollama/vLLM), and — only if you enable it —
-talks to a **remote collector** over the network. Its blast radius is small, but the network and
-parsing surfaces are real. We ask that you report vulnerabilities **privately** so we can fix them
+This is a modular **natural-language data query engine** — an **unprivileged** CLI tool. It makes
+**outbound HTTP** calls to the LLM and data providers *you* configure (using **your API keys, from the
+environment**), and **parses their responses** into a canonical schema. It needs no root and stores no
+long-lived service. Its blast radius is small, but the **secret-handling**, **outbound-call**, and
+**response-parsing** surfaces are real. Please report vulnerabilities **privately** so we can fix them
 before they're public.
 
 ## Supported versions
 
 The project is pre-release and pre-`1.0`; the surfaces are still moving (see [`ROADMAP.md`](./ROADMAP.md)).
-During this phase, **only the latest tagged release and the `main` branch receive security fixes** —
-there are no backported patch streams yet. A formal support window (supported minor versions +
-backport policy) lands with `v1.0.0`.
+During this phase, **only the latest tagged release and the `main` branch receive security fixes** — there
+are no backported patch streams yet. A formal support window lands with `v1.0.0`.
 
 | Version | Supported |
 |---------|-----------|
@@ -23,54 +22,59 @@ backport policy) lands with `v1.0.0`.
 
 **Please do not open a public issue, pull request, or discussion for a suspected vulnerability.**
 
-Report it privately via **GitHub's private vulnerability reporting** — the **"Report a
-vulnerability"** button under the repository's **Security** tab (GitHub Security Advisories). That
-opens a private channel with the maintainers.
+Report it privately via **GitHub's private vulnerability reporting** — the **"Report a vulnerability"**
+button under the repository's **Security** tab (GitHub Security Advisories). That opens a private channel
+with the maintainers.
 
 Please include, as far as you can determine:
 
-- the **component** (collector / core / GUI / TUI / CLI / exporters / remote `serve`) and the version / commit;
-- your **OS, GPU, and driver/NVML version** — GPU-source bugs are often driver-specific;
+- the **component** (core / a `Model` adapter / a `DataProvider` adapter / CLI) and the version / commit;
 - the **impact** and a **reproduction** (a PoC, steps, or a failing test);
-- whether it requires **remote mode** (`serve`/multi-host) or a specific **inference endpoint**.
+- whether it requires a **specific provider/LLM** or a particular (recorded or live) response.
 
-**What to expect.** This is an early, small project — we aim to **acknowledge a report within a few
-days** and to keep you updated as we triage and fix. We practice **coordinated disclosure**: we agree
-an embargo window with you, fix and release, then publish an advisory **crediting you** (unless you
-prefer to stay anonymous). Good-faith research conducted under this policy is welcome and we will not
-pursue it.
+**What to expect.** This is an early, small project — we aim to **acknowledge within a few days** and keep
+you updated as we triage and fix. We practice **coordinated disclosure**: agree an embargo, fix and release,
+then publish an advisory **crediting you** (unless you prefer to stay anonymous). Good-faith research under
+this policy is welcome and we will not pursue it.
 
 ## Scope — what is and isn't a vulnerability
 
 **In scope** (please report):
 
-- **The network surfaces** (`serve` remote + the exporter (Phase 9) `/metrics` / OTLP endpoints): a listener
-  exposing metrics without auth or binding more broadly than intended, or a malicious remote
-  host/collector being able to crash or exploit the desktop client.
-- **Parsing untrusted input:** malformed data from an inference endpoint (Ollama `/api/ps`, Prometheus
-  text) or a remote snapshot causing a crash, panic, unbounded memory use, or worse in the parser.
-- **Credential/secret leakage:** if the app stores remote-host addresses, tokens, or endpoint
-  credentials, anything that leaks them (world-readable config, logs, etc.).
-- **Supply-chain** issues in our build, release artifacts, or signing.
+- **Credential/secret leakage:** an API key appearing in logs, error messages, a recorded fixture, a
+  world-readable config, or anywhere it's persisted.
+- **Parsing untrusted responses:** malformed data from an LLM or data provider causing a crash, panic,
+  unbounded memory/CPU use, or worse in an adapter's raw→canonical mapping.
+- **Outbound-request abuse:** a configured endpoint/URL being coerced into reaching an unintended host
+  (SSRF-style), or a provider response steering the engine to fetch somewhere it shouldn't.
+- **Prompt-injection with real consequences:** content from a data source manipulating the model into
+  leaking a secret or exceeding the engine's read-only, answer-only behavior. (A merely *wrong answer* is
+  out of scope — see below.)
+- **Supply-chain** issues in our build, release artifacts, signing, or SBOM.
 - The app **requesting or requiring elevated privileges** it shouldn't need.
 
 **Out of scope** (not vulnerabilities):
 
-- The app **reading local GPU metrics (NVML) and `/proc`** — that's its normal, unprivileged behavior.
-- Attacks that **already require local access** to the user's machine (the attacker has already won).
-- Data shown from a **source the user explicitly pointed it at** (you chose to trust that host/endpoint).
+- The app **making outbound calls to the LLM/data endpoints you configured** — that's its normal behavior.
+- A **wrong or imprecise answer**: this is a research/analysis tool, not financial advice; incorrect
+  analysis is a bug to file, not a security issue (unless it stems from one of the in-scope items).
+- Attacks that **already require local access** to your machine (the attacker has already won).
+- Data from a **source you explicitly configured and trust**.
 
 ## Our security posture
 
 Several of this project's invariants *are* security controls — see the **Architectural invariants** in
 [`ROADMAP.md`](./ROADMAP.md) and the design notes in [`ARCHITECTURE.md`](./ARCHITECTURE.md):
 
-- **Unprivileged by design** — no root, no special capabilities; NVML/DCGM are read-only. If the app
-  ever appears to need elevation, that's a bug to report.
-- **Headless-engine boundary** — frontends only render `core`; data sources are isolated in
-  `collector`, which keeps the parsing/trust surface small and in one place.
-- **Bounded + panic-free parsing** — `unwrap`/`expect`/`panic!` are denied outside tests; malformed
-  input from an endpoint or remote host degrades gracefully, it never crashes the app.
-- **Local-first, remote opt-in** — nothing leaves your machine unless you enable remote monitoring;
-  `serve` and multi-host are authenticated and off by default.
-- **Supply chain** — reproducible, signed releases + SBOM, pinned dependencies, `cargo deny` in CI.
+- **Unprivileged by design** — no root, no special capabilities. If the app ever appears to need elevation,
+  that's a bug to report.
+- **Secrets stay out of the repo** — API keys come from env/config only; never committed, logged, or placed
+  in fixtures, and redacted from error output.
+- **Bounded, panic-free parsing** — `unwrap`/`expect`/`panic!` are denied outside tests; a malformed LLM or
+  provider response degrades to a clear error, it never crashes the engine.
+- **Grounded, read-only, answer-only** — the engine fetches data and answers from it; it takes no actions,
+  which bounds what a prompt-injection can achieve.
+- **Anti-corruption boundary** — providers' raw responses are contained in one adapter and mapped to the
+  canonical schema, keeping the parsing/trust surface small and in one place.
+- **Supply chain** — reproducible, keyless-signed releases + SBOM, pinned dependencies, `cargo deny` in CI,
+  and a scheduled advisory audit.

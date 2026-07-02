@@ -1,24 +1,20 @@
 # Contributing
 
-Thanks for your interest — this is an open-source, native **GPU & AI-inference monitor** in Rust: a
-single binary with **two first-class frontends**, a GPU-accelerated **GUI** (`egui` on `wgpu`) and a
-terminal **CLI/TUI** (`ratatui`), sitting on a headless data engine that also exports to
-Prometheus/OTLP.
+Thanks for your interest — this is an open-source, modular **natural-language data query engine** in Rust:
+ask a question in plain English and get an answer grounded in real data, by plugging in **any LLM** and
+**any data provider** behind two small traits.
 
-> Read [**`.rules`**](./.rules) first — the single source of truth for build commands and the
-> invariants that must never be traded away (`CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` all point
-> there). The design is in [**`ARCHITECTURE.md`**](./ARCHITECTURE.md); the staged plan in
-> [**`ROADMAP.md`**](./ROADMAP.md).
+> Read [**`.rules`**](./.rules) first — the single source of truth for build commands and the invariants
+> that must never be traded away (`CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` all point there). The design is
+> in [**`ARCHITECTURE.md`**](./ARCHITECTURE.md); the staged plan in [**`ROADMAP.md`**](./ROADMAP.md).
 
 ## Prerequisites
 
-- **Rust, stable** ([install `rustup`](https://www.rust-lang.org/tools/install)). No nightly, no
-  cross-compile, no `sudo`, no codegen step.
-- For **real data**: an NVIDIA driver / NVML on the host (no root needed). For **no GPU at all**: the
-  built-in **mock** source (`--mock`) — every command builds, runs, tests, and demos without a GPU.
-  *(GPU in a Windows box? See [Real NVIDIA hardware from Windows (WSL2)](#real-nvidia-hardware-from-windows-wsl2).)*
-- For the **GUI**, `wgpu` needs a working GPU *or* a software fallback; the `top` TUI and `ps` need
-  neither and run anywhere, including over SSH.
+- **Rust, stable** ([install `rustup`](https://www.rust-lang.org/tools/install)). No nightly, no `sudo`, no
+  codegen step.
+- For **real answers**: an API key for your chosen LLM (e.g. Claude) and data provider (e.g. Polygon), set
+  via **environment variables** — never committed. For **no keys at all**: the built-in **mock** model +
+  mock provider (`--mock`), which make every command build, run, test, and demo offline.
 
 ## Quick start
 
@@ -26,54 +22,13 @@ Prometheus/OTLP.
 git clone <repo> && cd agent
 cargo build
 
-# Run a frontend (`-p agent` selects the app; the workspace also has the `xtask` binary):
-cargo run -p agent -- gui       # the GPU-accelerated window (the default subcommand)
-cargo run -p agent -- top       # the live terminal TUI (great over SSH)
-cargo run -p agent -- ps        # one-shot snapshot table — works today against the mock source
-cargo run -p agent -- ps --json # the same, as structured JSON for scripts
-
-# No GPU? Drive any of the above from the mock source:
-cargo run -p agent -- top --mock   # or: AGENT_SOURCE=mock cargo run -p agent -- top
+# Ask a question. --mock uses the mock model + mock data source (no API keys, no network):
+cargo run -p agent -- ask "average close of FOO over the last 3 days" --mock
+cargo run -p agent -- ask "latest close of FOO" --mock --json   # structured output for scripts
 ```
 
-A bare `cargo build` builds the whole workspace — nothing is cross-compiled or embedded. Build one
-crate with `cargo build -p <crate>` (e.g. `-p agent-core`).
-
-## Real NVIDIA hardware from Windows (WSL2)
-
-The dev/CI target is **Linux** and most work runs headless on the **mock**, but exercising the real
-**NVML** path needs an NVIDIA GPU. If yours is in a Windows machine, **WSL2** is the cleanest way to reach
-it: you develop on Linux (the first-class target) while the card stays visible through the Windows driver.
-(Native Windows compiles too, but it's unvalidated — Windows is post-1.0; WSL2 is the recommended path.)
-
-> **One rule:** the GPU stack comes from the **Windows** NVIDIA driver — **never install an NVIDIA driver
-> *inside* WSL.** Doing so breaks the libraries WSL mounts from the host. Just keep the Windows driver current.
-
-```console
-# 1. Windows PowerShell (admin): install WSL2 + Ubuntu. Make sure a recent NVIDIA Windows driver is installed.
-wsl --install -d Ubuntu
-
-# 2. Inside Ubuntu — Rust toolchain + the system libs the GUI (wgpu/winit) needs to build.
-sudo apt update && sudo apt install -y \
-  build-essential pkg-config curl git jq \
-  libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # rustup, stable
-
-# 3. Confirm the card is visible — provided by the Windows driver, no install needed.
-nvidia-smi
-
-# 4. Build and run against the REAL GPU. The default source is NVML, so no --mock.
-cargo run -p agent -- ps
-cargo run -p agent -- ps --json | jq .     # cross-check the numbers against nvidia-smi
-```
-
-- **If NVML init fails:** the driver mounts `libnvidia-ml.so.1` under `/usr/lib/wsl/lib` (normally already
-  on the loader path); prepend `LD_LIBRARY_PATH=/usr/lib/wsl/lib` if `ps` can't find it.
-- **Not every counter:** WSL2's NVML exposes utilization and memory but may report some metrics as
-  unsupported — those render as a clear signal state, never a crash (by design).
-- **The GUI (`agent gui`):** needs **WSLg** (built into Windows 11); `sudo apt install mesa-vulkan-drivers`
-  if the window won't open. If `wgpu` still won't start, smoke the GUI natively on Windows (or stick to
-  `ps`/`top`) — the headless surfaces are the dependable ones under WSL.
+A bare `cargo build` builds the whole workspace. Build one crate with `cargo build -p <crate>` (e.g.
+`-p agent-core`). Real model/provider adapters land in Phases 2–3 and read their keys from the environment.
 
 ## Before you push — the local gate
 
@@ -87,59 +42,60 @@ cargo xtask ci                        # fmt + clippy + build + test + feature po
 …or individually:
 
 ```console
-cargo test --locked                          # headless, no GPU needed (mock source)
+cargo test --locked                          # offline: mock adapters + recorded fixtures
 cargo clippy --all-targets --locked -- -D warnings
 cargo fmt --all --check
 cargo hack --feature-powerset --no-dev-deps check --workspace   # no --locked: --no-dev-deps rewrites manifests
 cargo deny check
 ```
 
-CI mirrors this on `ubuntu-latest` with stable Rust and **no GPU** — the mock source keeps the whole
-pipeline headless. (Opening the `wgpu` GUI window needs a real display, so it's a manual smoke step.)
+CI mirrors this on `ubuntu-latest` with stable Rust and **no API keys** — the mock adapters and recorded
+fixtures keep the whole pipeline offline and deterministic.
 
 ## The testing ladder
 
-Almost everything runs **headless, with no GPU**, via the mock source; only the top two rungs need real
-hardware. Most changes touch only the bottom two. **Today the suite is `cargo test` — the `core` model,
-ring buffers (incl. `proptest`), the NVML→`Metrics` mapping, and the `ps --json` golden; the rungs below
-fill in as each surface lands.**
+Almost everything runs **offline, with no API keys**, via the mock adapters and recorded fixtures; only the
+top rung needs live keys.
 
-1. **Unit (headless):** the `core` model + ring buffers, parsers (NVML maps, Ollama `/api/ps`,
-   Prometheus text), view-model transforms, alert rules, and sink formats (Prometheus/OTLP) —
-   table-driven against committed golden fixtures. `cargo test`. Property tests (`proptest`) now cover
-   ring-buffer invariants; *planned (not yet wired):* fuzzing (`cargo-fuzz`) for the parsers, which eat
-   external input.
-2. **View-model / output snapshots:** what each surface *would* draw or emit, without a window — GUI
-   view models, the `ratatui` test backend, `ps --json` golden, the Prometheus exposition golden.
-   Because every surface is a pure view of `core`, a new metric gets one model test + thin per-surface
-   assertions.
-3. **Manual smoke (real hardware):** the GUI and `top` on a real **NVIDIA + Linux** host — single-GPU,
-   multi-GPU, MIG. Confirm it renders steadily, idles when nothing changes, and tears down cleanly.
-4. **Real inference e2e:** with a local **Ollama**/**vLLM** (or recorded output), assert the inference
-   panel populates next to the GPU the workload saturates, in both the GUI and the TUI.
-
-Per the overhead budget, the monitor's own footprint is a tracked metric: benchmark startup +
-steady-state, keep buffers bounded regardless of uptime, render on change (not on a spin loop), and
-surface our own CPU/GPU/RAM. Regressions are bugs.
+1. **Unit (pure):** the engine's `compute()`, adapter parsers/mappers (NL→`Plan`, raw API→canonical `Bar`),
+   and format helpers — pure functions, table-driven, unit-tested with no network. Property tests
+   (`proptest`) cover engine invariants. `cargo test`.
+2. **Contract tests (recorded fixtures):** each real adapter replays a captured LLM/provider response, so
+   its raw→canonical mapping is deterministic and **API drift fails CI**. Capturing a fixture is the only
+   step that touches a live endpoint (done deliberately, curated + license-checked, never auto-committed).
+3. **Known-answer evals:** end-to-end questions whose answers are verifiable — assert the engine computes
+   *and grounds* them correctly. This is the honesty backstop; it grows every phase.
+4. **Live e2e (opt-in, needs keys):** run against a real LLM + data provider to sanity-check the whole loop.
 
 ## The no-panic discipline
 
-`unwrap`, `expect`, and `panic!` are **`deny`-lints outside tests** (re-allowed in tests via
-`clippy.toml`). A monitor must degrade gracefully — an absent or asleep GPU, a missing inference
-endpoint, or a dead remote host is a clear "no signal" state, never a crash. Handle the error.
+`unwrap`, `expect`, and `panic!` are **`deny`-lints outside tests** (re-allowed in tests via `clippy.toml`).
+A failed model call, an unreachable provider, or an unmappable response is a **value** (`Err(...)`) that
+degrades to a clear message — never a crash.
+
+## Secrets
+
+API keys come from the **environment/config only**. Never commit, log, or embed them; never put a real key
+or real fetched data in a recorded fixture. If you add an adapter, read its key via env and redact it from
+any error/log output.
+
+## Grounded, not advice
+
+The engine answers from data it actually fetched and reports what it used. It is a **research/analysis**
+tool, not financial advice, and it never fabricates numbers — keep it that way.
 
 ## Phases & decisions
 
-Work is organized into phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release
-(see [`ROADMAP.md`](./ROADMAP.md)). Each phase closes with a **git tag + a working demo + green CI**, and
-isn't started until the prior is green. Record any significant, hard-to-reverse decision in
+Work is organized into phases (Phase 0 → Phase 11) that ladder to the one `v0.1.0` release (see
+[`ROADMAP.md`](./ROADMAP.md)). Each phase closes with a **git tag + a working demo + green CI**, and isn't
+started until the prior is green. Record any significant, hard-to-reverse decision in
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) (Design decisions) so the *why* outlives the diff.
 
 ## Commit & PR conventions
 
-- One logical change per commit; imperative subject ("Add the NVML utilization sampler", not "added").
+- One logical change per commit; imperative subject ("Add the Claude model adapter", not "added").
 - **Never add AI co-author or attribution trailers**; never commit secrets or fetched/generated data.
-- Every metric must be reachable in all three human surfaces (GUI, TUI, `--json`) — frontend parity.
+- A new LLM or data source is a new **adapter behind a trait** — never a special case in the core.
 - Every PR must pass the full gate (`cargo xtask ci`).
 
 ## License

@@ -11,11 +11,11 @@ path = "src/main.rs"
 
 [dependencies]
 agent-core.workspace      = true
-agent-collector.workspace = true
-agent-ui.workspace        = true
+agent-models.workspace    = true
+agent-providers.workspace = true
 agent-cli.workspace       = true
-anyhow.workspace           = true
-clap.workspace             = true
+anyhow.workspace          = true
+clap.workspace            = true
 
 [lints]
 workspace = true
