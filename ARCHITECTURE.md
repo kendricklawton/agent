@@ -22,9 +22,11 @@ provider maps its raw API onto it, so a provider's wire format — and its API d
    canonical schema here        canonical schema (drift contained)   engine's grounded Answer
 ```
 
-The flow is one-directional: **question → `Model` plans a structured query → `DataProvider` returns
-canonical data → engine computes the metric → `Model` grounds the answer**. A new LLM or data source is a
-new adapter and **nothing else** — the core depends on neither a specific model nor a specific provider.
+The flow is one-directional: **question → `Model` plans a structured query (a `query` tool call) →
+`DataProvider` returns canonical data → engine computes the metric **and composes the grounded answer** → the
+surface renders it**. The model chooses the query; the engine — not the LLM — authors the number. A new LLM
+or data source is a new adapter and **nothing else** — the core depends on neither a specific model nor a
+specific provider.
 
 ## The crates
 
@@ -69,11 +71,11 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
    whole packaging/signing path before there's anything to ship.
 10. **One tool-use loop, not a split `plan`/`answer`; the provider is a tool the engine runs.** *(Landed,
     Phase 2.)* The `Model` seam collapses to a single `respond(conversation, tools) -> Step` step: each turn
-    the model either asks to run tools (`Step::UseTools`) or emits its final answer (`Step::Done`) — the same
-    shape as the real Messages API. "Planning" is just the model choosing to call the `query` tool; the split
-    `plan()`/`answer()` methods disappear. Crucially the **engine runs the tools, not the LLM**: the model
-    asks for a metric over a ticker's bars, but the `DataProvider` fetch and the `compute()` arithmetic are
-    executed by the engine and fed back as a trustworthy tool result. *Why:* (a) it preserves
+    the model either asks to run tools (`Step::UseTools`) or signals it has enough to answer (`Step::Done`) —
+    the same shape as the real Messages API. "Planning" is just the model choosing to call the `query` tool;
+    the split `plan()`/`answer()` methods disappear. Crucially the **engine runs the tools, not the LLM**: the
+    model asks for a metric over a ticker's bars, but the `DataProvider` fetch and the `compute()` arithmetic
+    are executed by the engine and fed back as a trustworthy tool result. *Why:* (a) it preserves
     **grounded-not-advice** — the LLM never does the math or invents a number; (b) a turn becomes a
     *sequence of messages*, so a `Conversation` is the unit of work and **multi-turn + session-resume**
     (Phase 5) fall out for free — the conversation serializes to JSONL, no database; (c) it matches the
@@ -81,8 +83,8 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
     signatures change from `question: &str` to a `Conversation` — a breaking reshape done deliberately while
     **mock-only and pre-freeze**, because doing it after a live adapter is far more expensive. *Rejected:*
     keeping `plan`/`answer` (can't express tool loops or multi-turn) and letting the LLM compute (breaks
-    grounding). Streaming (`Step::Done` as a token delta stream) and the async boxing strategy for
-    `Box<dyn Model>` layer on top of this same loop — see the async + streaming invariant.
+    grounding). Engine-authored answers, streaming, and the async boxing strategy for `Box<dyn Model>` layer
+    on top of this same loop — see the async + streaming invariant.
     - *Async boxing (landed first, Phase 2):* the seams are `async` via **`async-trait`**, chosen because
       the engine holds `Box<dyn Model>`/`Box<dyn DataProvider>` for runtime adapter selection (12-factor
       backing services) and native `async fn` in traits isn't `dyn`-compatible. *Rejected:* generic
@@ -95,12 +97,23 @@ The load-bearing, hard-to-reverse choices. Record new ones here when you make th
       grounded); granular fetch/compute tools come with the Phase-9 query model. A **step budget** and an
       **ungrounded-answer guard** (a `Done` with no executed `query` is refused) enforce termination and
       honesty.
-    - *Streaming (landed, Phase 2):* `Step::Done` carries a **`Stream` of text deltas** (freeze-safe — a real
-      LLM streams SSE tokens and can't return a whole `String` without buffering). `Engine::ask` takes a
-      **`&mut dyn TokenSink`** and pushes each delta to the surface as it consumes the stream, still returning
-      the full `Answer`. *Why a push sink over `ask -> impl Stream`:* object-safe over `Box<dyn Model>`, no
-      `&mut self` borrow entanglement, and it bridges cleanly to a Python callback (SDK) or an SSE channel
-      (server). The human CLI streams to stdout; `--json` uses a `NullSink` and stays atomic.
+    - *The engine authors the figure, not the LLM (landed, Phase 2).* `Step::Done` carries **no text** — it's
+      a signal that the model is ready; the **engine composes the grounded sentence** deterministically from
+      the query provenance (`Metric::format_value` + the instrument + `bars_used` + provider). *Why:* for a
+      *data-query* engine the answer is a number someone may act on, and letting a language model author it
+      leaves the prose free to drift from `Answer.value` — the `Ungrounded` guard only proves a query *ran*,
+      not that the words match it. Making the engine the sole author closes that gap by construction and
+      removes a whole hallucination class; the LLM's linguistic flair becomes a Phase-5 chat concern layered
+      on top of trustworthy figures. This also earns the **instrument in `Answer` provenance** (`symbol` +
+      `window_days`): a bare number with no ticker is unauditable. *Cost:* reverses the first-cut
+      `Step::Done(Stream<delta>)` payload — a deliberate pre-freeze correction, cheap now, expensive after a
+      live adapter. *Rejected:* model-narrates-engine-verifies (brittle — verifying free text contains a
+      correctly-rounded figure is fuzzy, and the guarantee stays weaker than authorship).
+    - *Streaming (landed, Phase 2):* `Engine::ask` takes a **`&mut dyn TokenSink`**; the engine streams its
+      composed sentence to the surface word-by-word (source moved *model→engine* with the authorship decision
+      above), still returning the full `Answer`. *Why a push sink over `ask -> impl Stream`:* object-safe over
+      `Box<dyn Model>`, no `&mut self` borrow entanglement, and it bridges cleanly to a Python callback (SDK)
+      or an SSE channel (server). The human CLI streams to stdout; `--json` uses a `NullSink` and stays atomic.
 11. **Config is layered and adapter selection is config, not code.** *(Landed, Phase 2.)* One `Config`
     resolved **flags > env (`AGENT_*`) > file (TOML) > defaults**, with IO split from logic (a pure
     `resolve` fold, unit-tested for precedence; an impure `load` that reads env + an explicit-path file).

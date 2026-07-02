@@ -10,11 +10,12 @@ CLI** and a **native Python SDK**. This is the staged plan; the *why* is in
 The whole engine is one **async, streaming** loop across two ports:
 
 **question → `Model` runs a tool-use loop (plans a query, the engine executes it against the
-`DataProvider`, canonical data comes back) → `Model` streams a grounded answer.**
+`DataProvider`, canonical data comes back) → the engine composes and streams a grounded answer.**
 
-- **`Model`** (an LLM adapter): drives a **tool-use loop** — it calls the engine's query tool, receives
-  canonical data, and **streams** a grounded answer. **Claude, OpenAI, and Gemini ship at launch** (Claude
-  is the reference that shapes the loop); local models next.
+- **`Model`** (an LLM adapter): drives a **tool-use loop** — it calls the engine's query tool and, once it
+  has the canonical data, signals it's done; the **engine** composes and streams the grounded answer (so the
+  figure can't drift from the data). **Claude, OpenAI, and Gemini ship at launch** (Claude is the reference
+  that shapes the loop); local models next.
 - **`DataProvider`** (a data adapter): declares its capabilities, returns data in the **canonical schema**.
   **Polygon and Yahoo Finance ship at launch** (Polygon licensed/reference; Yahoo keyless but unofficial);
   Kalshi/prediction-markets and custom sources next.
@@ -104,9 +105,11 @@ have to be retrofitted through the SDK and API later. **Complete.**
 - [x] **12-factor config** (§0.6): a layered `Config` resolved **flags > env (`AGENT_*`) > file (TOML) >
   defaults**; model/provider selection is config (a name → adapter registry in the app). `tracing` logs to
   **stderr** with stdout reserved for the answer/`--json`. Gate green.
-- [x] **Streaming**: `Step::Done` carries a `Stream` of text deltas; `Engine::ask(question, &mut dyn
-  TokenSink)` forwards each delta to the surface as it's produced and returns the full `Answer`. The CLI
-  streams tokens to stdout (flushing each); `--json` stays atomic via a `NullSink`. Gate green, keyless.
+- [x] **Streaming + engine-authored answers**: `Step::Done` is a *signal* — the **engine** composes the
+  grounded sentence from provenance (the model chooses the query, never the number, so the figure can't drift
+  from `Answer.value`) and streams it via `Engine::ask(question, &mut dyn TokenSink)`; the `Answer` also gains
+  the instrument (`symbol` + `window_days`) for auditability. The CLI streams tokens to stdout (flushing
+  each); `--json` stays atomic via a `NullSink`. Gate green, keyless.
 
 ## Phase 3 — Real LLM adapters (Claude · OpenAI · Gemini) ⭐ + evals in-phase
 Three real LLMs at launch, not one — the true test that the tool-use loop seam is right **before** it freezes.
@@ -117,7 +120,7 @@ Three real LLMs at launch, not one — the true test that the tool-use loop seam
   `Step`. If the seam can't absorb all three, fix it now — mock-only cost, pre-freeze.
 - [ ] Contract tests over **recorded fixtures** (offline, per adapter) **and** a **grounding check** — assert
   the answer actually used the fetched data — so hallucination is caught from day one, not at Phase 13.
-- [ ] Known-answer evals extended to the real streamed tool-use path (recorded) for all three.
+- [ ] Known-answer evals extended to the real streamed tool-use path (recorded) for all three.lets do a review of our implementation of the following tasks > [@ROADMAP.md (85:109)](file:///home/k-henry/repos/agent/ROADMAP.md#L85:109) Lets ensure the task make sense up to this point and then review the code
 
 ## Phase 4 — Real data providers (Polygon + Yahoo Finance) + schema correctness
 Two real sources at launch: Polygon (licensed reference) and Yahoo Finance (**keyless** — real data with no

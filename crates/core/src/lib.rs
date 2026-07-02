@@ -1,18 +1,19 @@
 //! `agent-core` — the query engine and its two adapter seams.
 //!
 //! The engine turns a natural-language question into a **grounded** answer by driving a **tool-use loop**: a
-//! [`Model`] (an LLM) either calls the engine's `query` tool or returns a final answer; the engine — not the
-//! model — runs the tool (a [`DataProvider`] fetch mapped to the canonical schema below, then the pure
-//! [`compute`]), and feeds the trustworthy result back for the model to ground on. Every surface (the CLI
-//! and Python SDK now, an API later) is a pure view of this — see ARCHITECTURE.md (headless engine, ports &
-//! adapters).
+//! [`Model`] (an LLM) either calls the engine's `query` tool or signals it has enough to answer; the engine —
+//! not the model — runs the tool (a [`DataProvider`] fetch mapped to the canonical schema below, then the
+//! pure [`compute`]) **and composes the answer sentence itself** from the computed provenance. The model
+//! chooses *which query to run*, never the number: the figure a user sees is correct-by-construction, not
+//! LLM free-text that could drift from [`Answer::value`] (the grounded-not-advice invariant — see
+//! ARCHITECTURE.md decision #10). Every surface (the CLI and Python SDK now, an API later) is a pure view of
+//! this — headless engine, ports & adapters.
 
 #![forbid(unsafe_code)]
 
-use std::{pin::Pin, time::SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -102,6 +103,23 @@ impl Metric {
             Metric::LatestClose => "latest close",
             Metric::MaxHigh => "highest high",
             Metric::MinLow => "lowest low",
+        }
+    }
+
+    /// Format a computed value for **display**, with precision appropriate to the metric. This is
+    /// presentation only — the structured [`Answer::value`] keeps full `f64` precision; this rounding never
+    /// feeds back into a computation.
+    ///
+    /// Every metric today is a price, shown to 2 decimals. This `match` is the deliberate seam for financial
+    /// correctness: non-price metrics (volume → integer, a return → basis points) branch here, and the
+    /// fixed-2dp `f64` is a placeholder for a decimal type with per-instrument tick size (LEARN-TECHNICAL,
+    /// Tier 2) — the right home for that is exactly this method, not scattered `{:.2}` at call sites.
+    #[must_use]
+    pub fn format_value(self, value: f64) -> String {
+        match self {
+            Metric::AverageClose | Metric::LatestClose | Metric::MaxHigh | Metric::MinLow => {
+                format!("{value:.2}")
+            }
         }
     }
 }
@@ -248,37 +266,20 @@ impl ToolResult {
     }
 }
 
-/// A stream of answer-text deltas (tokens/chunks) the model produces for its final turn. A real adapter
-/// wraps its SSE byte-stream; the mock chunks its composed sentence. `Send` + `'static` so it's owned (never
-/// borrows the model) and works across threads. Each item is `Ok(chunk)` or a `ModelError` mid-stream.
-pub type AnswerDeltas = Pin<Box<dyn Stream<Item = Result<String, ModelError>> + Send>>;
-
-/// Build an [`AnswerDeltas`] that yields `text` as a single delta — the simplest adapter case (no chunking).
-#[must_use]
-pub fn answer_from_text(text: impl Into<String>) -> AnswerDeltas {
-    stream::once(std::future::ready(Ok(text.into()))).boxed()
-}
-
-/// One turn of the model's reasoning: either run tools, or the final grounded answer. Replaces the old
-/// split `plan`/`answer` — "planning" is now just the model choosing to call the `query` tool. `Done`
-/// carries a **stream** so the answer text can arrive incrementally (a real LLM streams tokens over SSE and
-/// can't hand back a whole `String` without buffering the response first).
+/// One turn of the model's reasoning: either run tools, or signal that it has enough to answer. Replaces the
+/// old split `plan`/`answer` — "planning" is now just the model choosing to call the `query` tool.
+///
+/// `Done` carries **no text**: the model's job ends at deciding it's ready, and the **engine** composes the
+/// grounded sentence from the provenance it computed (see [`Engine::ask`]). This is what makes the figure
+/// trustworthy — a language model never authors the number. The engine streams its composed sentence to the
+/// caller's [`TokenSink`], so liveness is preserved without trusting model prose.
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum Step {
     /// Run these tools, feed the results back, and ask the model again.
     UseTools(Vec<ToolCall>),
-    /// The model's final, grounded answer, streamed delta-by-delta.
-    Done(AnswerDeltas),
-}
-
-// Hand-written because `AnswerDeltas` (a boxed stream) is neither `Clone` nor `Debug`.
-impl std::fmt::Debug for Step {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Step::UseTools(calls) => f.debug_tuple("UseTools").field(calls).finish(),
-            Step::Done(_) => f.write_str("Done(<answer stream>)"),
-        }
-    }
+    /// The model has enough to answer — the engine now composes and streams the grounded sentence.
+    Done,
 }
 
 /// What a provider can serve — the engine checks this before planning a fetch it can't fulfil. Grows a
@@ -305,17 +306,23 @@ impl Capabilities {
 pub struct Answer {
     /// The original question.
     pub question: String,
+    /// The instrument the answer is about (the ticker the query ran on) — provenance: a figure with no
+    /// instrument is unauditable.
+    pub symbol: String,
     /// The model that answered.
     pub model: String,
     /// The data provider used.
     pub provider: String,
     /// The metric computed.
     pub metric: Metric,
-    /// The computed value.
+    /// The computed value, at full `f64` precision (the text rounds for display; this does not).
     pub value: f64,
     /// How many bars the answer is grounded in.
     pub bars_used: usize,
-    /// The grounded natural-language answer.
+    /// The lookback window the query requested, in days. May exceed [`bars_used`](Answer::bars_used) when the
+    /// provider has fewer bars (holidays, listing age) — the gap is itself provenance.
+    pub window_days: u32,
+    /// The grounded natural-language answer, composed by the engine from the fields above.
     pub text: String,
 }
 
@@ -333,8 +340,9 @@ pub trait Model: Send {
     fn name(&self) -> &str;
 
     /// Advance the conversation one turn: inspect the messages so far and the available `tools`, and return
-    /// either [`Step::UseTools`] (the engine runs them and feeds the results back) or [`Step::Done`] with the
-    /// final answer. "Planning" a query is just choosing to call the `query` tool.
+    /// either [`Step::UseTools`] (the engine runs them and feeds the results back) or [`Step::Done`] (the
+    /// model has enough data; the engine composes the grounded answer). "Planning" a query is just choosing
+    /// to call the `query` tool.
     ///
     /// # Errors
     /// If the model can't produce a step (e.g. the question names no instrument to query).
@@ -417,12 +425,32 @@ pub enum EngineError {
 /// never produces a final answer.
 const MAX_STEPS: usize = 8;
 
-/// The provenance the engine records while executing a `query` tool, used to build a grounded [`Answer`].
-#[derive(Clone, Copy)]
+/// The provenance the engine records while executing a `query` tool, used to compose a grounded [`Answer`].
+/// Holds the instrument + window so the answer can name what it's about, not just a bare number.
+#[derive(Clone)]
 struct Grounded {
+    symbol: String,
     metric: Metric,
     value: f64,
     bars_used: usize,
+    window_days: u32,
+}
+
+/// Compose the engine-authored grounded sentence from provenance — e.g. *"NVDA average close was 101.00 over
+/// the last 3 daily bars (source: mock)."* This is the **only** place answer prose is produced; the model
+/// never writes it, so the figure can't drift from [`Grounded::value`]. Reports [`Grounded::bars_used`] (what
+/// the value is actually computed over), not the requested window.
+fn grounded_sentence(g: &Grounded, provider: &str) -> String {
+    let bars = if g.bars_used == 1 { "bar" } else { "bars" };
+    format!(
+        "{} {} was {} over the last {} daily {} (source: {}).",
+        g.symbol,
+        g.metric.label(),
+        g.metric.format_value(g.value),
+        g.bars_used,
+        bars,
+        provider,
+    )
 }
 
 /// The decoded input of a `query` tool call. Kept private — the wire form is JSON (a [`ToolCall`]); this is
@@ -489,8 +517,9 @@ impl Engine {
     /// fetches and computes, so the number is trustworthy) and feed the results back, until the model returns
     /// its final [`Step::Done`]. The answer is grounded in the last `query` the engine executed.
     ///
-    /// The final answer text is **streamed** to `sink` delta-by-delta as it's produced (pass
-    /// [`NullSink`] to ignore it); the returned [`Answer`] still carries the full text + provenance.
+    /// On [`Step::Done`] the engine **composes** the grounded sentence from the query provenance (the model
+    /// never writes the number) and **streams** it to `sink` word-by-word — pass [`NullSink`] to ignore it;
+    /// the returned [`Answer`] carries the same text plus the structured provenance.
     ///
     /// # Errors
     /// If the model fails, a tool call is unknown/undecodable, the provider can't serve the query, the model
@@ -530,14 +559,14 @@ impl Engine {
                     }
                     conversation.push(Message::user(results));
                 }
-                Step::Done(mut deltas) => {
-                    // Grounding is checked *before* streaming, so an ungrounded answer emits nothing.
+                Step::Done => {
+                    // Grounding is checked *before* composing, so an ungrounded answer emits nothing.
                     let g = grounded.ok_or(EngineError::Ungrounded)?;
-                    let mut text = String::new();
-                    while let Some(delta) = deltas.next().await {
-                        let delta = delta?;
-                        sink.push(&delta);
-                        text.push_str(&delta);
+                    // The engine — not the model — authors the sentence, so the text can't drift from the
+                    // computed value. Stream it word-by-word to keep the surface's live-render contract.
+                    let text = grounded_sentence(&g, self.provider.name());
+                    for chunk in text.split_inclusive(' ') {
+                        sink.push(chunk);
                     }
                     tracing::debug!(
                         value = g.value,
@@ -546,11 +575,13 @@ impl Engine {
                     );
                     return Ok(Answer {
                         question: question.to_owned(),
+                        symbol: g.symbol,
                         model: self.model.name().to_owned(),
                         provider: self.provider.name().to_owned(),
                         metric: g.metric,
                         value: g.value,
                         bars_used: g.bars_used,
+                        window_days: g.window_days,
                         text,
                     });
                 }
@@ -564,31 +595,42 @@ impl Engine {
     async fn run_tool(&mut self, call: &ToolCall) -> Result<(ToolResult, Grounded), EngineError> {
         match call.name.as_str() {
             "query" => {
-                let input: QueryInput = serde_json::from_value(call.input.clone())
+                let QueryInput {
+                    symbol,
+                    last_days,
+                    metric,
+                } = serde_json::from_value(call.input.clone())
                     .map_err(|e| EngineError::Tool(format!("bad `query` input: {e}")))?;
                 if !self.provider.capabilities().bars {
                     return Err(EngineError::Unsupported(self.provider.name().to_owned()));
                 }
                 let bars = self
                     .provider
-                    .bars(&DataQuery::new(input.symbol, input.last_days))
+                    .bars(&DataQuery::new(symbol.clone(), last_days))
                     .await?;
-                let value = compute(input.metric, &bars)?;
+                let value = compute(metric, &bars)?;
+                let bars_used = bars.len();
                 tracing::debug!(
-                    metric = ?input.metric,
-                    bars = bars.len(),
+                    symbol = %symbol,
+                    metric = ?metric,
+                    bars = bars_used,
                     value,
                     "engine: ran query tool"
                 );
                 let grounded = Grounded {
-                    metric: input.metric,
+                    symbol: symbol.clone(),
+                    metric,
                     value,
-                    bars_used: bars.len(),
+                    bars_used,
+                    window_days: last_days,
                 };
+                // The tool result the model sees is self-describing (carries its own instrument), so it's
+                // auditable and ready for a future narration mode — even though the engine authors the prose.
                 let output = json!({
-                    "metric": input.metric,
+                    "symbol": symbol,
+                    "metric": metric,
                     "value": value,
-                    "bars_used": bars.len(),
+                    "bars_used": bars_used,
                 });
                 Ok((
                     ToolResult {
@@ -678,14 +720,9 @@ mod tests {
             convo: &Conversation,
             _tools: &[ToolSpec],
         ) -> Result<Step, ModelError> {
-            if let Some(value) = last_result_value(convo) {
-                // Emit in ≥2 chunks so tests can prove the answer streams, not arrives as one blob.
-                let text = format!("grounded: {value}");
-                let chunks: Vec<Result<String, ModelError>> = text
-                    .split_inclusive(' ')
-                    .map(|c| Ok(c.to_owned()))
-                    .collect();
-                return Ok(Step::Done(stream::iter(chunks).boxed()));
+            // Once the engine has fed a query result back, we're done — the engine composes the answer.
+            if last_result_value(convo).is_some() {
+                return Ok(Step::Done);
             }
             Ok(Step::UseTools(vec![ToolCall {
                 id: "1".to_owned(),
@@ -727,7 +764,7 @@ mod tests {
             _convo: &Conversation,
             _tools: &[ToolSpec],
         ) -> Result<Step, ModelError> {
-            Ok(Step::Done(answer_from_text("42, trust me")))
+            Ok(Step::Done)
         }
     }
 
@@ -768,15 +805,48 @@ mod tests {
         assert_eq!(a.metric, Metric::AverageClose);
         assert!((a.value - 101.0).abs() < 1e-9); // avg of 100,101,102
         assert_eq!(a.bars_used, 3);
+        assert_eq!(a.symbol, "FOO"); // the instrument the query ran on — provenance
+        assert_eq!(a.window_days, 3); // the requested lookback
         assert_eq!((a.model.as_str(), a.provider.as_str()), ("stub", "stub"));
-        assert!(a.text.contains("101")); // the model grounded on the fed-back value
-        // The sink saw the same text, delivered incrementally.
+        // The engine authored the sentence: it names the instrument and carries the display-rounded figure,
+        // so the prose can't drift from `a.value`.
+        assert_eq!(
+            a.text,
+            "FOO average close was 101.00 over the last 3 daily bars (source: stub)."
+        );
+        // The sink saw the same text, delivered incrementally (word-by-word).
         assert_eq!(sink.text, a.text);
         assert!(
             sink.deltas >= 2,
             "expected ≥2 streamed deltas, got {}",
             sink.deltas
         );
+    }
+
+    #[test]
+    fn engine_authored_sentence_is_metric_aware_and_named() {
+        let g = Grounded {
+            symbol: "NVDA".to_owned(),
+            metric: Metric::AverageClose,
+            value: 101.0,
+            bars_used: 3,
+            window_days: 5,
+        };
+        assert_eq!(
+            grounded_sentence(&g, "polygon"),
+            "NVDA average close was 101.00 over the last 3 daily bars (source: polygon)."
+        );
+        // A single bar reads "bar", not "bars".
+        let one = Grounded {
+            symbol: "FOO".to_owned(),
+            metric: Metric::LatestClose,
+            value: 7.5,
+            bars_used: 1,
+            window_days: 1,
+        };
+        assert!(grounded_sentence(&one, "mock").contains("1 daily bar (source: mock)"));
+        // Display formatting rounds to the metric's precision; the structured value stays full-precision.
+        assert_eq!(Metric::MaxHigh.format_value(1234.5678), "1234.57");
     }
 
     #[tokio::test]

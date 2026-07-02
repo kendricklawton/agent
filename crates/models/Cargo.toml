@@ -8,8 +8,6 @@ publish = false
 [dependencies]
 agent-core.workspace  = true
 async-trait.workspace = true
-# The final answer streams as word-sized deltas (`Step::Done`).
-futures.workspace     = true
 # The `query` tool call carries JSON input/output.
 serde_json.workspace  = true
 

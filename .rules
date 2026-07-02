@@ -12,9 +12,9 @@ each provider's API drift. **Open-core:** the engine, the adapter SDK, and refer
 hosted / multi-source / team features are additive, never bolted into the core. (Repo is still named
 `agent`; the rename is an early task.)
 
-**Flow:** question → `Model` plans a structured query → `DataProvider` returns canonical data → `Model`
-grounds the answer. Every surface (CLI, Python SDK, later API) is a **pure view** — none calls an LLM or a
-provider directly.
+**Flow:** question → `Model` plans a structured query → `DataProvider` returns canonical data → the
+**engine** composes the grounded answer (the model chooses the query, never authors the number). Every
+surface (CLI, Python SDK, later API) is a **pure view** — none calls an LLM or a provider directly.
 
 ## Commands
 | Task | Command |
