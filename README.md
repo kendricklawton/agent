@@ -35,10 +35,10 @@ and demos with **no GPU present** (a mock data source).
 ## Usage
 ```
 agent              # launch the GUI (default)
-agent top          # live TUI in the terminal
+agent top          # live TUI in the terminal (Phase 3)
 agent ps           # one-shot snapshot table
 agent ps --json    # ... as JSON, for scripts
-agent serve        # thin headless collector, for remote/multi-host monitoring
+agent serve        # thin headless collector, for remote/multi-host monitoring (Phase 10)
 ```
 
 ## Stack

@@ -18,7 +18,7 @@ wildcards = "deny"
 
 [licenses]
 confidence-threshold = 0.8
-# Approved SPDX identifiers. The GUI/wgpu tree (wired in M1+) pulls a wider set than today's
+# Approved SPDX identifiers. The GUI/wgpu tree (wired in Phase 1+) pulls a wider set than today's
 # clap/anyhow deps; extend this list (with a reason) as real deps require it.
 allow = [
     "MIT",

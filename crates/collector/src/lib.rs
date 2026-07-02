@@ -60,7 +60,10 @@ impl Collector for MockCollector {
                 )
                 .with_temperature(Some(Celsius(30 + u / 2))) // 30..80 °C
                 .with_power(Some(Milliwatts(50_000 + u * 2_500))) // 50..300 W
-                .with_clocks(Some(Megahertz(300 + u * 15)), Some(Megahertz(5_001)))
+                .with_clocks(
+                    Some(Megahertz(300 + u * 15)),
+                    Some(Megahertz(5_000 + u * 45)),
+                )
                 .with_sm_occupancy(Some(Pct::clamped(util.saturating_sub(5))))
                 .with_pcie(Some(KbPerSec(u * 1_000)), Some(KbPerSec(u * 800)))
                 .with_fan(Some(Pct::clamped(30 + util / 2)));

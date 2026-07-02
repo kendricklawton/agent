@@ -10,6 +10,9 @@ use agent_collector::{MockCollector, NvmlCollector};
 use agent_core::Collector;
 use clap::{Parser, Subcommand};
 
+/// Synthetic GPUs the mock reports — for both the `--mock` source and the no-GPU fallback.
+const MOCK_DEVICES: u32 = 2;
+
 #[derive(Parser)]
 #[command(
     name = "agent",
@@ -75,7 +78,7 @@ fn resolve_source(mock_flag: bool, env: Option<String>) -> Source {
 /// notice on a GPU-less host; `AGENT_SOURCE=nvml` makes NVML mandatory.
 fn build_collector(source: Source) -> anyhow::Result<Box<dyn Collector>> {
     match source {
-        Source::Mock => Ok(Box::new(MockCollector::new(2))),
+        Source::Mock => Ok(Box::new(MockCollector::new(MOCK_DEVICES))),
         Source::Nvml { required } => match NvmlCollector::new() {
             Ok(c) => Ok(Box::new(c)),
             Err(e) if required => Err(anyhow::anyhow!("NVML required but unavailable: {e}")),
@@ -84,22 +87,33 @@ fn build_collector(source: Source) -> anyhow::Result<Box<dyn Collector>> {
                     "agent: no NVIDIA GPU detected ({e}) — using the synthetic mock source \
                      (run with --mock to silence this, or AGENT_SOURCE=nvml to require NVML)"
                 );
-                Ok(Box::new(MockCollector::new(2)))
+                Ok(Box::new(MockCollector::new(MOCK_DEVICES)))
             }
         },
     }
 }
 
-/// The subcommand to run when none is given: the GUI on a desktop, but `top` on a headless box (no
-/// display) — with a hint, so SSH/server users land somewhere useful instead of a window that can't open.
+/// The subcommand to run when none is given: probes for a display, warns on a headless box, and defers
+/// the choice to [`choose_default`]. Kept thin (just the I/O) so the decision itself stays unit-testable.
 fn default_cmd() -> Cmd {
-    if has_display() {
+    let display = has_display();
+    if !display {
+        eprintln!(
+            "agent: no display detected — printing a one-shot `ps` (the live `top` TUI arrives in \
+             Phase 3; run `agent gui` to force the window)"
+        );
+    }
+    choose_default(display)
+}
+
+/// The pure default-subcommand decision (no I/O, so it's testable): the GUI when a display is present,
+/// else a one-shot `ps` — it works today and exits cleanly, unlike the `top` placeholder. Switch the
+/// headless arm back to `Cmd::Top` once Phase 3 lands the live TUI.
+fn choose_default(display: bool) -> Cmd {
+    if display {
         Cmd::Gui
     } else {
-        eprintln!(
-            "agent: no display detected — falling back to `top` (run `agent gui` to force the window)"
-        );
-        Cmd::Top
+        Cmd::Ps { json: false }
     }
 }
 
@@ -144,5 +158,13 @@ mod tests {
             resolve_source(false, Some("other".into())),
             Source::Nvml { required: false }
         ));
+    }
+
+    #[test]
+    fn default_is_gui_with_a_display_and_ps_when_headless() {
+        assert!(matches!(choose_default(true), Cmd::Gui));
+        // Headless must fall back to the working one-shot `ps`, never the unimplemented `top` (which
+        // errors until Phase 3). Guards against a regression of that routing.
+        assert!(matches!(choose_default(false), Cmd::Ps { json: false }));
     }
 }
